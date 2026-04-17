@@ -192,6 +192,16 @@ def test_sdk_missing_fails_without_explicit_test_stub() -> None:
         AnnouncementSubsystem(AnnouncementConfig())
 
 
+def test_sdk_missing_fails_even_with_legacy_test_stub_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert SDK_AVAILABLE is False
+    monkeypatch.setenv("SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB", "1")
+
+    with pytest.raises(SubsystemSdkUnavailableError, match="subsystem-sdk is required"):
+        AnnouncementSubsystem(AnnouncementConfig())
+
+
 def test_broken_sdk_import_is_not_downgraded_to_stub(tmp_path: Path) -> None:
     sdk_dir = tmp_path / "subsystem_sdk"
     sdk_dir.mkdir()
@@ -357,6 +367,24 @@ def test_cli_ping_fails_when_sdk_is_unavailable() -> None:
         [sys.executable, "-m", "subsystem_announcement", "ping"],
         cwd=ROOT,
         env=_cli_env(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout.strip() == ""
+    assert "subsystem-sdk is required" in result.stderr
+
+
+def test_cli_ping_fails_when_legacy_test_stub_env_is_set() -> None:
+    env = _cli_env()
+    env["SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB"] = "1"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "subsystem_announcement", "ping"],
+        cwd=ROOT,
+        env=env,
         check=False,
         capture_output=True,
         text=True,

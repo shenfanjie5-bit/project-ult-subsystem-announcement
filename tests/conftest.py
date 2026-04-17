@@ -21,10 +21,12 @@ def fake_sdk(monkeypatch: pytest.MonkeyPatch) -> FakeSDKRecorder:
     from subsystem_announcement.runtime import lifecycle
     from subsystem_announcement.runtime.sdk_adapter import AnnouncementSubsystem
 
-    monkeypatch.setenv("SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB", "1")
     recorder = FakeSDKRecorder()
 
     class RecordingAnnouncementSubsystem(AnnouncementSubsystem):
+        def __init__(self, config):  # type: ignore[no-untyped-def]
+            super().__init__(config, allow_sdk_stub=True)
+
         def on_register(self):  # type: ignore[no-untyped-def]
             spec = super().on_register()
             recorder.registrations.append(spec)

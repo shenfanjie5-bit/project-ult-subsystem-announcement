@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,7 +22,6 @@ from ._sdk_stub import (
     SubsystemBaseInterface as StubSubsystemBaseInterface,
 )
 
-TEST_STUB_ENV: Final[str] = "SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB"
 _SDK_PACKAGE: Final[str] = "subsystem_sdk"
 
 PayloadLike: TypeAlias = ExPayload | dict[str, Any]
@@ -115,8 +113,8 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
         if not SDK_AVAILABLE and not _stub_explicitly_allowed(allow_sdk_stub):
             raise SubsystemSdkUnavailableError(
                 "subsystem-sdk is required for announcement runtime startup. "
-                f"Install the pinned dependency or set {TEST_STUB_ENV}=1 only "
-                "inside tests that intentionally use the local SDK stub."
+                "Install the pinned dependency or inject the local SDK stub "
+                "from test-only code."
             )
         self.config = config
         self.run_id = str(uuid4())
@@ -185,7 +183,7 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
 
 
 def _stub_explicitly_allowed(allow_sdk_stub: bool) -> bool:
-    return allow_sdk_stub or os.environ.get(TEST_STUB_ENV) == "1"
+    return allow_sdk_stub
 
 
 def _require_sdk_api() -> _SdkApi:
