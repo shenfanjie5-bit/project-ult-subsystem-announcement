@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+import pytest
 
 from subsystem_announcement.config import AnnouncementConfig
 from subsystem_announcement.discovery import consume_announcement_ref
@@ -19,6 +20,7 @@ from subsystem_announcement.discovery.dedupe import (
     compute_content_hash,
 )
 from subsystem_announcement.discovery.envelope import AnnouncementEnvelope
+from subsystem_announcement.discovery.errors import DocumentCacheError
 
 
 def _envelope(
@@ -94,6 +96,23 @@ def test_dedupe_store_records_concurrent_writers_without_lost_updates(
     for artifact in artifacts:
         assert store.find_by_announcement_id(artifact.announcement_id) == artifact
         assert store.find_by_content_hash(artifact.content_hash) == artifact
+
+
+def test_dedupe_store_rejects_same_announcement_id_with_conflicting_hash(
+    tmp_path: Path,
+) -> None:
+    config = AnnouncementConfig(artifact_root=tmp_path)
+    cache = AnnouncementDocumentCache(config)
+    first = cache.put(_envelope("ann-1"), b"first pdf bytes")
+    second = cache.put(_envelope("ann-1"), b"second pdf bytes")
+    store = AnnouncementDedupeStore(tmp_path)
+
+    store.record(first)
+
+    with pytest.raises(DocumentCacheError, match="announcement_id=ann-1"):
+        store.record(second)
+
+    assert store.find_by_announcement_id("ann-1") == first
 
 
 def test_dedupe_store_uses_relative_paths_after_artifact_root_move(
@@ -204,6 +223,88 @@ def test_consume_announcement_ref_marks_same_content_hash_duplicate(
     assert second.document.local_path == first.document.local_path
     assert third.document.local_path == first.document.local_path
     assert request_count == 2
+    assert len(body_files) == 1
+
+
+def test_consume_announcement_ref_concurrent_same_id_returns_canonical_artifact(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        first_seen = asyncio.Event()
+        second_seen = asyncio.Event()
+        request_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            if request_count == 1:
+                first_seen.set()
+                await second_seen.wait()
+            else:
+                second_seen.set()
+                await first_seen.wait()
+            return httpx.Response(200, content=b"same concurrent pdf bytes")
+
+        config = AnnouncementConfig(artifact_root=tmp_path)
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            results = await asyncio.gather(
+                consume_announcement_ref(_envelope("ann-1"), config, client=client),
+                consume_announcement_ref(_envelope("ann-1"), config, client=client),
+            )
+        return request_count, results
+
+    request_count, results = asyncio.run(scenario())
+    body_files = _document_body_files(tmp_path)
+
+    assert sorted(result.status for result in results) == ["duplicate", "fetched"]
+    assert results[0].document == results[1].document
+    assert request_count == 2
+    assert len(body_files) == 1
+
+
+def test_consume_announcement_ref_concurrent_same_id_conflicting_bytes_fails(
+    tmp_path: Path,
+) -> None:
+    async def scenario():
+        first_seen = asyncio.Event()
+        second_seen = asyncio.Event()
+        request_count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            content = f"concurrent pdf bytes {request_count}".encode()
+            if request_count == 1:
+                first_seen.set()
+                await second_seen.wait()
+            else:
+                second_seen.set()
+                await first_seen.wait()
+            return httpx.Response(200, content=content)
+
+        config = AnnouncementConfig(artifact_root=tmp_path)
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            results = await asyncio.gather(
+                consume_announcement_ref(_envelope("ann-1"), config, client=client),
+                consume_announcement_ref(_envelope("ann-1"), config, client=client),
+                return_exceptions=True,
+            )
+        return request_count, results
+
+    request_count, results = asyncio.run(scenario())
+    successes = [result for result in results if not isinstance(result, BaseException)]
+    errors = [result for result in results if isinstance(result, DocumentCacheError)]
+    body_files = _document_body_files(tmp_path)
+
+    assert request_count == 2
+    assert len(successes) == 1
+    assert successes[0].status == "fetched"
+    assert len(errors) == 1
+    assert "announcement_id=ann-1" in str(errors[0])
     assert len(body_files) == 1
 
 

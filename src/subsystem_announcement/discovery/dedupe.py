@@ -6,10 +6,11 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
+from typing import Literal
 
 from .document import AnnouncementDocumentArtifact
 from .errors import DocumentCacheError
@@ -67,15 +68,23 @@ class AnnouncementDedupeStore:
             index = self._read_index()
             existing_for_id = index["announcement_id"].get(target_announcement_id)
             if existing_for_id is not None:
-                if artifact.content_hash in index["content_hash"]:
-                    return
                 existing_artifact = self._load_artifact(
                     self._metadata_path_from_index(existing_for_id)
                 )
                 if existing_artifact.content_hash == artifact.content_hash:
-                    index["content_hash"][artifact.content_hash] = existing_for_id
-                    self._write_index(index)
-                return
+                    indexed_hash_path = index["content_hash"].get(
+                        artifact.content_hash
+                    )
+                    if indexed_hash_path != existing_for_id:
+                        index["content_hash"][artifact.content_hash] = existing_for_id
+                        self._write_index(index)
+                    return
+                raise DocumentCacheError(
+                    "Conflicting announcement document content: "
+                    f"announcement_id={target_announcement_id} "
+                    f"existing_hash={existing_artifact.content_hash} "
+                    f"new_hash={artifact.content_hash}"
+                )
 
             canonical_metadata_path = index["content_hash"].setdefault(
                 artifact.content_hash,
@@ -83,6 +92,64 @@ class AnnouncementDedupeStore:
             )
             index["announcement_id"][target_announcement_id] = canonical_metadata_path
             self._write_index(index)
+
+    def resolve_or_record(
+        self,
+        *,
+        announcement_id: str,
+        content_hash: str,
+        create_artifact: Callable[[], AnnouncementDocumentArtifact],
+    ) -> tuple[Literal["fetched", "duplicate"], AnnouncementDocumentArtifact]:
+        """Atomically resolve duplicate state or create and index a new artifact."""
+
+        with self._exclusive_lock():
+            index = self._read_index()
+            existing_for_id = index["announcement_id"].get(announcement_id)
+            if existing_for_id is not None:
+                existing_artifact = self._load_artifact(
+                    self._metadata_path_from_index(existing_for_id)
+                )
+                if existing_artifact.content_hash != content_hash:
+                    raise DocumentCacheError(
+                        "Conflicting announcement document content: "
+                        f"announcement_id={announcement_id} "
+                        f"existing_hash={existing_artifact.content_hash} "
+                        f"new_hash={content_hash}"
+                    )
+                if index["content_hash"].get(content_hash) != existing_for_id:
+                    index["content_hash"][content_hash] = existing_for_id
+                    self._write_index(index)
+                return "duplicate", existing_artifact
+
+            existing_for_hash = index["content_hash"].get(content_hash)
+            if existing_for_hash is not None:
+                existing_artifact = self._load_artifact(
+                    self._metadata_path_from_index(existing_for_hash)
+                )
+                index["announcement_id"][announcement_id] = existing_for_hash
+                self._write_index(index)
+                return "duplicate", existing_artifact
+
+            artifact = create_artifact()
+            if artifact.announcement_id != announcement_id:
+                raise DocumentCacheError(
+                    "Cached artifact announcement_id mismatch: "
+                    f"announcement_id={announcement_id} "
+                    f"artifact_announcement_id={artifact.announcement_id}"
+                )
+            if artifact.content_hash != content_hash:
+                raise DocumentCacheError(
+                    "Cached artifact content_hash mismatch: "
+                    f"announcement_id={announcement_id} "
+                    f"expected_hash={content_hash} actual_hash={artifact.content_hash}"
+                )
+            metadata_path_text = self._metadata_path_to_index(
+                _metadata_path_for_document(artifact.local_path)
+            )
+            index["content_hash"][content_hash] = metadata_path_text
+            index["announcement_id"][announcement_id] = metadata_path_text
+            self._write_index(index)
+            return "fetched", artifact
 
     def _read_index(self) -> dict[str, dict[str, str]]:
         if not self.index_path.exists():

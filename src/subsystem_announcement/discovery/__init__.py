@@ -36,14 +36,10 @@ async def consume_announcement_ref(
 
     content = await fetch_official_document(envelope, client=client)
     content_hash = compute_content_hash(content)
-    existing_by_hash = dedupe_store.find_by_content_hash(content_hash)
-    if existing_by_hash is not None:
-        dedupe_store.record(existing_by_hash, announcement_id=envelope.announcement_id)
-        return AnnouncementDiscoveryResult(
-            status="duplicate",
-            document=existing_by_hash,
-        )
-
-    artifact = AnnouncementDocumentCache(config).put(envelope, content)
-    dedupe_store.record(artifact)
-    return AnnouncementDiscoveryResult(status="fetched", document=artifact)
+    cache = AnnouncementDocumentCache(config)
+    status, artifact = dedupe_store.resolve_or_record(
+        announcement_id=envelope.announcement_id,
+        content_hash=content_hash,
+        create_artifact=lambda: cache.put(envelope, content),
+    )
+    return AnnouncementDiscoveryResult(status=status, document=artifact)
