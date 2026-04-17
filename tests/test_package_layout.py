@@ -45,7 +45,15 @@ def test_package_exports_version_and_name() -> None:
 @pytest.mark.parametrize("subpackage", SUBPACKAGES)
 def test_subpackages_are_importable(subpackage: str) -> None:
     module = importlib.import_module(f"subsystem_announcement.{subpackage}")
-    assert module.__all__ == []
+    if subpackage == "discovery":
+        assert set(module.__all__) == {
+            "AnnouncementDiscoveryResult",
+            "AnnouncementDocumentArtifact",
+            "AnnouncementEnvelope",
+            "consume_announcement_ref",
+        }
+    else:
+        assert module.__all__ == []
 
 
 def test_config_defaults_are_instantiable() -> None:
