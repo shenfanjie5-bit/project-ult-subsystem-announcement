@@ -7,14 +7,12 @@ from uuid import uuid4
 
 from .sdk_adapter import HeartbeatPayload
 
-DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60
-
 
 def build_heartbeat(
     now: datetime,
     last_run_id: str | None,
     *,
-    interval_seconds: int = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    interval_seconds: int,
     last_ex_id: str | None = None,
     status: str = "ok",
 ) -> HeartbeatPayload:

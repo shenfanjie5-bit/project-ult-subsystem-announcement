@@ -7,10 +7,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from subsystem_announcement.config import AnnouncementConfig
+import pytest
+from pydantic import ValidationError
+
+from subsystem_announcement.config import AnnouncementConfig, load_config
 from subsystem_announcement.runtime.ex0 import build_ex0_envelope
 from subsystem_announcement.runtime.heartbeat import build_heartbeat
 from subsystem_announcement.runtime.lifecycle import run
+from subsystem_announcement.runtime import sdk_adapter
 from subsystem_announcement.runtime.registration import build_registration_spec
 from subsystem_announcement.runtime.sdk_adapter import (
     AnnouncementSubsystem,
@@ -125,7 +129,31 @@ def test_run_exits_cleanly_when_stop_event_is_set(fake_sdk) -> None:
 def test_submit_exception_is_logged_and_does_not_crash_run(fake_sdk) -> None:
     fake_sdk.raise_on_submit = True
 
-    asyncio.run(run(AnnouncementConfig(heartbeat_interval_seconds=1), once=True))
+    async def scenario() -> None:
+        stop_event = asyncio.Event()
+
+        async def stop_soon() -> None:
+            await asyncio.sleep(0.05)
+            stop_event.set()
+
+        await asyncio.gather(
+            run(AnnouncementConfig(heartbeat_interval_seconds=1), stop_event=stop_event),
+            stop_soon(),
+        )
+
+    asyncio.run(scenario())
+
+    assert len(fake_sdk.heartbeats) >= 2
+    assert fake_sdk.heartbeats[-1].status == "degraded"
+    assert len(fake_sdk.submissions) == 1
+    assert fake_sdk.submit_results == []
+
+
+def test_once_submit_exception_raises_for_health_check(fake_sdk) -> None:
+    fake_sdk.raise_on_submit = True
+
+    with pytest.raises(RuntimeError, match="fake submit failure"):
+        asyncio.run(run(AnnouncementConfig(heartbeat_interval_seconds=1), once=True))
 
     assert len(fake_sdk.submissions) == 1
     assert fake_sdk.submit_results == []
@@ -146,6 +174,74 @@ def test_concurrent_heartbeats_keep_same_run_id() -> None:
 
 def test_sdk_missing_uses_local_stub() -> None:
     assert SDK_AVAILABLE is False
+
+
+def test_broken_sdk_import_is_not_downgraded_to_stub(tmp_path: Path) -> None:
+    sdk_dir = tmp_path / "subsystem_sdk"
+    sdk_dir.mkdir()
+    (sdk_dir / "__init__.py").write_text(
+        "import definitely_missing_subsystem_dep\n",
+        encoding="utf-8",
+    )
+    env = _cli_env()
+    env["PYTHONPATH"] = os.pathsep.join([str(tmp_path), env["PYTHONPATH"]])
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import subsystem_announcement.runtime.sdk_adapter",
+        ],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "definitely_missing_subsystem_dep" in result.stderr
+
+
+def test_real_sdk_mode_delegates_submit_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def fake_sdk_hook(module_names, hook_names, payload, hook_kind):  # type: ignore[no-untyped-def]
+        calls.append((module_names, hook_names, payload, hook_kind))
+        return {"accepted": True, "receipt_id": "sdk-receipt", "ex_type": "Ex-0"}
+
+    monkeypatch.setattr(sdk_adapter, "SDK_AVAILABLE", True)
+    monkeypatch.setattr(sdk_adapter, "_call_sdk_hook", fake_sdk_hook)
+    subsystem = AnnouncementSubsystem(AnnouncementConfig())
+
+    result = subsystem.submit(build_ex0_envelope(subsystem.run_id, "test"))
+
+    assert result.accepted is True
+    assert result.receipt_id == "sdk-receipt"
+    assert subsystem.last_ex_id == "sdk-receipt"
+    assert calls[0][3] == "submit"
+    assert calls[0][2]["ex_type"] == "Ex-0"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("heartbeat_interval_seconds", 0),
+        ("heartbeat_interval_seconds", -1),
+        ("registration_ttl_seconds", 0),
+        ("registration_ttl_seconds", -1),
+    ],
+)
+def test_load_config_rejects_non_positive_runtime_intervals(
+    tmp_path: Path,
+    field: str,
+    value: int,
+) -> None:
+    config_path = tmp_path / "announcement.toml"
+    config_path.write_text(f"{field} = {value}\n", encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        load_config(config_path)
 
 
 def test_cli_ping_returns_zero_in_offline_stub_mode() -> None:

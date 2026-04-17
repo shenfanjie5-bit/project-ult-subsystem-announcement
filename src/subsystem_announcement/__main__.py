@@ -98,6 +98,7 @@ if typer is not None:
         except Exception as exc:
             typer.echo(f"run failed: {exc}", err=True)
             raise typer.Exit(code=1) from exc
+        typer.echo("ok")
 else:
     app = None
 

@@ -34,7 +34,9 @@ async def run(
     if not SDK_AVAILABLE:
         _log_info("subsystem_sdk_degraded", sdk_available=False)
 
-    await _submit_ex0_once(subsystem)
+    submit_ok = await _submit_ex0_once(subsystem, raise_on_error=once)
+    if not submit_ok:
+        _emit_heartbeat(subsystem)
     if once:
         return
 
@@ -51,7 +53,9 @@ async def run(
             except Exception as exc:
                 _log_error("heartbeat_failed", exc, run_id=subsystem.run_id)
                 continue
-            await _submit_ex0_once(subsystem)
+            submit_ok = await _submit_ex0_once(subsystem)
+            if not submit_ok:
+                _emit_heartbeat(subsystem)
 
 
 async def ping(config: AnnouncementConfig) -> None:
@@ -60,12 +64,29 @@ async def ping(config: AnnouncementConfig) -> None:
     await run(config, once=True)
 
 
-async def _submit_ex0_once(subsystem: AnnouncementSubsystem) -> None:
+async def _submit_ex0_once(
+    subsystem: AnnouncementSubsystem,
+    *,
+    raise_on_error: bool = False,
+) -> bool:
     payload = build_ex0_envelope(subsystem.run_id, reason="stage0-placeholder")
     try:
         subsystem.submit(payload)
     except Exception as exc:
+        subsystem.last_submit_failed = True
         _log_error("ex0_submit_failed", exc, run_id=subsystem.run_id)
+        if raise_on_error:
+            raise
+        return False
+    subsystem.last_submit_failed = False
+    return True
+
+
+def _emit_heartbeat(subsystem: AnnouncementSubsystem) -> None:
+    try:
+        subsystem.on_heartbeat()
+    except Exception as exc:
+        _log_error("heartbeat_failed", exc, run_id=subsystem.run_id)
 
 
 def _log_error(event: str, exc: Exception, **fields: Any) -> None:
