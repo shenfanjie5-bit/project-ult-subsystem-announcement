@@ -32,7 +32,7 @@ async def run(
     subsystem.on_register()
     subsystem.on_heartbeat()
     if not SDK_AVAILABLE:
-        _log_info("subsystem_sdk_degraded", sdk_available=False)
+        _log_info("subsystem_sdk_test_stub", sdk_available=False)
 
     submit_ok = await _submit_ex0_once(subsystem, raise_on_error=once)
     if not submit_ok:
@@ -71,12 +71,19 @@ async def _submit_ex0_once(
 ) -> bool:
     payload = build_ex0_envelope(subsystem.run_id, reason="stage0-placeholder")
     try:
-        subsystem.submit(payload)
+        result = subsystem.submit(payload)
     except Exception as exc:
         subsystem.last_submit_failed = True
         _log_error("ex0_submit_failed", exc, run_id=subsystem.run_id)
         if raise_on_error:
             raise
+        return False
+    if not getattr(result, "accepted", False):
+        subsystem.last_submit_failed = True
+        exc = RuntimeError("subsystem-sdk submit rejected Ex-0 payload")
+        _log_error("ex0_submit_rejected", exc, run_id=subsystem.run_id)
+        if raise_on_error:
+            raise exc
         return False
     subsystem.last_submit_failed = False
     return True

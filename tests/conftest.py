@@ -13,6 +13,7 @@ class FakeSDKRecorder:
     submissions: list[dict[str, Any]] = field(default_factory=list)
     submit_results: list[Any] = field(default_factory=list)
     raise_on_submit: bool = False
+    reject_submit: bool = False
 
 
 @pytest.fixture
@@ -23,6 +24,9 @@ def fake_sdk(monkeypatch: pytest.MonkeyPatch) -> FakeSDKRecorder:
     recorder = FakeSDKRecorder()
 
     class RecordingAnnouncementSubsystem(AnnouncementSubsystem):
+        def __init__(self, config):  # type: ignore[no-untyped-def]
+            super().__init__(config, allow_sdk_stub=True)
+
         def on_register(self):  # type: ignore[no-untyped-def]
             spec = super().on_register()
             recorder.registrations.append(spec)
@@ -43,6 +47,18 @@ def fake_sdk(monkeypatch: pytest.MonkeyPatch) -> FakeSDKRecorder:
             recorder.submissions.append(payload)
             if recorder.raise_on_submit:
                 raise RuntimeError("fake submit failure")
+            if recorder.reject_submit:
+                from subsystem_announcement.runtime.sdk_adapter import SubmitResult
+
+                result = SubmitResult(
+                    accepted=False,
+                    receipt_id="fake-rejected",
+                    ex_type=payload["ex_type"],
+                    warnings=(),
+                    errors=("fake rejected",),
+                )
+                recorder.submit_results.append(result)
+                return result
             result = super().submit(candidate)
             recorder.submit_results.append(result)
             return result

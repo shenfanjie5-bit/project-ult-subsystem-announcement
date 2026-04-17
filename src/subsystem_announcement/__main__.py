@@ -58,10 +58,6 @@ if typer is not None:
             configure_logging()
             runtime_config = load_config(config)
             from .runtime.lifecycle import ping
-            from .runtime.sdk_adapter import SDK_AVAILABLE
-
-            if not SDK_AVAILABLE:
-                typer.echo("subsystem-sdk unavailable; using local SDK stub", err=True)
             asyncio.run(ping(runtime_config))
         except Exception as exc:
             typer.echo(f"ping failed: {exc}", err=True)
@@ -88,10 +84,6 @@ if typer is not None:
             configure_logging()
             runtime_config = load_config(config)
             from .runtime.lifecycle import run
-            from .runtime.sdk_adapter import SDK_AVAILABLE
-
-            if not SDK_AVAILABLE:
-                typer.echo("subsystem-sdk unavailable; using local SDK stub", err=True)
             asyncio.run(run(runtime_config, once=once))
         except KeyboardInterrupt:
             raise typer.Exit(code=130) from None
@@ -134,13 +126,6 @@ def _fallback_main(argv: list[str]) -> int:
             configure_logging()
             runtime_config = load_config(config_path)
             from .runtime.lifecycle import ping, run
-            from .runtime.sdk_adapter import SDK_AVAILABLE
-
-            if not SDK_AVAILABLE:
-                print(
-                    "subsystem-sdk unavailable; using local SDK stub",
-                    file=sys.stderr,
-                )
             if command == "ping":
                 asyncio.run(ping(runtime_config))
             else:
