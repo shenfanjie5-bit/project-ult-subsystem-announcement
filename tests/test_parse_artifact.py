@@ -104,6 +104,17 @@ def test_parsed_artifact_rejects_unconfigured_parser_version(tmp_path: Path) -> 
         ParsedAnnouncementArtifact.model_validate(data)
 
 
+def test_parsed_artifact_rejects_non_hex_content_hash(tmp_path: Path) -> None:
+    source_path = tmp_path / "ann-1.pdf"
+    source_path.write_bytes(b"%PDF fixture")
+    data = _artifact(source_path).model_dump()
+    data["content_hash"] = "g" * 64
+    data["source_document"]["content_hash"] = "g" * 64
+
+    with pytest.raises(ValidationError, match="SHA-256 hex digest"):
+        ParsedAnnouncementArtifact.model_validate(data)
+
+
 def test_parsed_artifact_validates_offsets_and_table_section_ids(
     tmp_path: Path,
 ) -> None:
@@ -128,4 +139,25 @@ def test_write_parsed_artifact_rejects_unsafe_announcement_id(tmp_path: Path) ->
     unsafe = artifact.model_copy(update={"announcement_id": "../ann-1"})
 
     with pytest.raises(ParseNormalizationError, match="Unsafe announcement_id"):
+        write_parsed_artifact(unsafe, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "unsafe_hash",
+    [
+        "../" + ("a" * 61),
+        "a/" + ("b" * 62),
+        "a\\" + ("c" * 62),
+    ],
+)
+def test_write_parsed_artifact_rejects_unsafe_content_hash(
+    tmp_path: Path,
+    unsafe_hash: str,
+) -> None:
+    source_path = tmp_path / "ann-1.pdf"
+    source_path.write_bytes(b"%PDF fixture")
+    artifact = _artifact(source_path)
+    unsafe = artifact.model_copy(update={"content_hash": unsafe_hash})
+
+    with pytest.raises(ParseNormalizationError, match="Unsafe content_hash"):
         write_parsed_artifact(unsafe, tmp_path)

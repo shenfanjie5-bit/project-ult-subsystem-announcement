@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from subsystem_announcement.discovery.document import AnnouncementDocumentArtifact
 
 from .errors import ParseNormalizationError
+
+
+_SHA256_HEX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 class AnnouncementSection(BaseModel):
@@ -71,6 +75,15 @@ class ParsedAnnouncementArtifact(BaseModel):
     parsed_at: datetime
     source_document: AnnouncementDocumentArtifact
 
+    @field_validator("content_hash")
+    @classmethod
+    def validate_content_hash(cls, value: str) -> str:
+        """Require a path-safe SHA-256 digest for persistence provenance."""
+
+        if not _is_sha256_hex_digest(value):
+            raise ValueError("content_hash must be a 64-character SHA-256 hex digest")
+        return value
+
     @field_validator("parser_version")
     @classmethod
     def reject_unconfigured_parser_version(cls, value: str) -> str:
@@ -110,8 +123,10 @@ def write_parsed_artifact(artifact: ParsedAnnouncementArtifact, root: Path) -> P
         artifact.announcement_id,
         field_name="announcement_id",
     )
-    path = root / "parsed" / announcement_id / f"{artifact.content_hash}.json"
-    _ensure_under_root(path, root)
+    content_hash = _safe_sha256_content_hash(artifact.content_hash)
+    parsed_announcement_root = root / "parsed" / announcement_id
+    path = parsed_announcement_root / f"{content_hash}.json"
+    _ensure_under_root(path, parsed_announcement_root)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
@@ -150,10 +165,23 @@ def _safe_path_component(value: str, *, field_name: str) -> str:
     return value
 
 
+def _safe_sha256_content_hash(value: str) -> str:
+    if not _is_sha256_hex_digest(value):
+        raise ParseNormalizationError(
+            "Unsafe content_hash for parsed artifact path: "
+            "expected 64-character SHA-256 hex digest"
+        )
+    return value
+
+
+def _is_sha256_hex_digest(value: str) -> bool:
+    return bool(_SHA256_HEX_RE.fullmatch(value))
+
+
 def _ensure_under_root(path: Path, root: Path) -> None:
     try:
         path.resolve().relative_to(root.resolve())
     except ValueError as exc:
         raise ParseNormalizationError(
-            f"Parsed artifact path escaped artifact root: path={path} root={root}"
+            f"Parsed artifact path escaped parsed announcement root: path={path} root={root}"
         ) from exc
