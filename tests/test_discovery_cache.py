@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,6 +72,58 @@ def test_dedupe_store_finds_recorded_artifact_by_id_and_hash(
 
     assert store.find_by_announcement_id("ann-1") == artifact
     assert store.find_by_content_hash(artifact.content_hash) == artifact
+
+
+def test_dedupe_store_records_concurrent_writers_without_lost_updates(
+    tmp_path: Path,
+) -> None:
+    config = AnnouncementConfig(artifact_root=tmp_path)
+    cache = AnnouncementDocumentCache(config)
+    artifacts = [
+        cache.put(_envelope(f"ann-{index}"), f"pdf bytes {index}".encode())
+        for index in range(24)
+    ]
+
+    def record_artifact(artifact) -> None:
+        AnnouncementDedupeStore(tmp_path).record(artifact)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(record_artifact, artifacts))
+
+    store = AnnouncementDedupeStore(tmp_path)
+    for artifact in artifacts:
+        assert store.find_by_announcement_id(artifact.announcement_id) == artifact
+        assert store.find_by_content_hash(artifact.content_hash) == artifact
+
+
+def test_dedupe_store_uses_relative_paths_after_artifact_root_move(
+    tmp_path: Path,
+) -> None:
+    original_root = tmp_path / "artifacts"
+    moved_root = tmp_path / "moved-artifacts"
+    config = AnnouncementConfig(artifact_root=original_root)
+    artifact = AnnouncementDocumentCache(config).put(_envelope(), b"pdf bytes")
+    store = AnnouncementDedupeStore(original_root)
+
+    store.record(artifact)
+
+    index = json.loads(
+        (original_root / "documents" / ".dedupe_index.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert not Path(index["announcement_id"]["ann-1"]).is_absolute()
+    assert not Path(index["content_hash"][artifact.content_hash]).is_absolute()
+
+    original_root.rename(moved_root)
+    moved_store = AnnouncementDedupeStore(moved_root)
+    moved_artifact = moved_store.find_by_announcement_id("ann-1")
+
+    assert moved_artifact is not None
+    assert moved_artifact.local_path == moved_root / artifact.local_path.relative_to(
+        original_root
+    )
+    assert moved_artifact.local_path.exists()
 
 
 def test_consume_announcement_ref_dedupes_repeated_announcement_id(

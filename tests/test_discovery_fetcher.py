@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
+import subsystem_announcement.discovery.fetcher as fetcher_module
 from subsystem_announcement.discovery.envelope import AnnouncementEnvelope
 from subsystem_announcement.discovery.errors import (
     DocumentFetchError,
@@ -15,6 +16,17 @@ from subsystem_announcement.discovery.fetcher import (
     fetch_official_document,
     validate_official_url,
 )
+
+
+@pytest.fixture
+def retry_delays(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(fetcher_module.asyncio, "sleep", fake_sleep)
+    return delays
 
 
 def _envelope(url: str = "https://static.sse.com.cn/disclosure/ann-1.pdf"):
@@ -71,6 +83,28 @@ def test_fetch_official_document_returns_200_body() -> None:
     assert asyncio.run(scenario()) == b"pdf bytes"
 
 
+def test_fetch_official_document_rejects_non_official_redirect_before_request() -> None:
+    requested_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        return httpx.Response(
+            302,
+            headers={"location": "https://news.example.com/ann-1.pdf"},
+        )
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            with pytest.raises(NonOfficialSourceError, match="news.example.com"):
+                await fetch_official_document(_envelope(), client=client)
+
+    asyncio.run(scenario())
+
+    assert requested_urls == ["https://static.sse.com.cn/disclosure/ann-1.pdf"]
+
+
 def test_fetch_official_document_fails_404_without_retry() -> None:
     request_count = 0
 
@@ -91,7 +125,9 @@ def test_fetch_official_document_fails_404_without_retry() -> None:
     assert request_count == 1
 
 
-def test_fetch_official_document_retries_429_then_succeeds() -> None:
+def test_fetch_official_document_retries_429_then_succeeds(
+    retry_delays: list[float],
+) -> None:
     statuses = [429, 429, 200]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -106,9 +142,12 @@ def test_fetch_official_document_retries_429_then_succeeds() -> None:
 
     assert asyncio.run(scenario()) == b"ok"
     assert statuses == []
+    assert retry_delays == [0.5, 1.0]
 
 
-def test_fetch_official_document_retries_5xx_then_succeeds() -> None:
+def test_fetch_official_document_retries_5xx_then_succeeds(
+    retry_delays: list[float],
+) -> None:
     statuses = [503, 502, 200]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -123,9 +162,12 @@ def test_fetch_official_document_retries_5xx_then_succeeds() -> None:
 
     assert asyncio.run(scenario()) == b"ok"
     assert statuses == []
+    assert retry_delays == [0.5, 1.0]
 
 
-def test_fetch_official_document_reports_timeout_after_bounded_attempts() -> None:
+def test_fetch_official_document_reports_timeout_after_bounded_attempts(
+    retry_delays: list[float],
+) -> None:
     request_count = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -148,3 +190,4 @@ def test_fetch_official_document_reports_timeout_after_bounded_attempts() -> Non
     asyncio.run(scenario())
 
     assert request_count == 2
+    assert retry_delays == [0.5]
