@@ -3,47 +3,121 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable, Mapping
+import importlib.util
+import os
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, TypeAlias
+from typing import Any, Final, TypeAlias
 from uuid import uuid4
 
+from subsystem_announcement import PACKAGE_NAME, __version__
 from subsystem_announcement.config import AnnouncementConfig
 
-try:
-    from subsystem_sdk import (  # type: ignore[import-not-found]
-        Ex0Payload,
-        ExPayload,
-        HeartbeatPayload,
-        RegistrationSpec,
-        SubmitResult,
-        SubsystemBaseInterface,
-    )
-except ModuleNotFoundError as exc:
-    if exc.name != "subsystem_sdk":
-        raise
+from ._sdk_stub import (
+    Ex0Payload,
+    ExPayload,
+    HeartbeatPayload,
+    RegistrationSpec,
+    SubmitResult as StubSubmitResult,
+    SubsystemBaseInterface as StubSubsystemBaseInterface,
+)
 
-    from ._sdk_stub import (
-        Ex0Payload,
-        ExPayload,
-        HeartbeatPayload,
-        RegistrationSpec,
-        SubmitResult,
-        SubsystemBaseInterface,
-    )
-
-    SDK_AVAILABLE = False
-else:
-    SDK_AVAILABLE = True
+TEST_STUB_ENV: Final[str] = "SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB"
+_SDK_PACKAGE: Final[str] = "subsystem_sdk"
 
 PayloadLike: TypeAlias = ExPayload | dict[str, Any]
-SdkHook: TypeAlias = Callable[[Any], Any]
+
+
+class SubsystemSdkUnavailableError(RuntimeError):
+    """Raised when runtime code starts without the required subsystem-sdk."""
+
+
+class UnsupportedSubsystemSdkError(RuntimeError):
+    """Raised when subsystem-sdk is installed but lacks the pinned API."""
+
+
+@dataclass(frozen=True)
+class _SdkApi:
+    subsystem_base_interface: type[Any]
+    registration_spec: type[Any]
+    submit_receipt: type[Any]
+    register_subsystem: Any
+    send_heartbeat: Any
+    submit: Any
+    assert_producer_only: Any
+
+
+def _load_official_sdk_api() -> _SdkApi | None:
+    if importlib.util.find_spec(_SDK_PACKAGE) is None:
+        return None
+
+    try:
+        base_module = importlib.import_module("subsystem_sdk.base")
+        submit_module = importlib.import_module("subsystem_sdk.submit")
+        heartbeat_module = importlib.import_module("subsystem_sdk.heartbeat")
+        validate_module = importlib.import_module("subsystem_sdk.validate")
+        return _SdkApi(
+            subsystem_base_interface=_required_symbol(
+                base_module,
+                "SubsystemBaseInterface",
+            ),
+            registration_spec=_required_symbol(
+                base_module,
+                "SubsystemRegistrationSpec",
+            ),
+            submit_receipt=_required_symbol(submit_module, "SubmitReceipt"),
+            register_subsystem=_required_symbol(base_module, "register_subsystem"),
+            send_heartbeat=_required_symbol(heartbeat_module, "send_heartbeat"),
+            submit=_required_symbol(submit_module, "submit"),
+            assert_producer_only=_required_symbol(
+                validate_module,
+                "assert_producer_only",
+            ),
+        )
+    except Exception as exc:
+        raise UnsupportedSubsystemSdkError(
+            "Unsupported subsystem-sdk version: expected pinned public API "
+            "subsystem_sdk.base.{SubsystemBaseInterface,"
+            "SubsystemRegistrationSpec,register_subsystem}, "
+            "subsystem_sdk.submit.{SubmitReceipt,submit}, "
+            "subsystem_sdk.heartbeat.send_heartbeat, and "
+            "subsystem_sdk.validate.assert_producer_only."
+        ) from exc
+
+
+def _required_symbol(module: Any, name: str) -> Any:
+    symbol = getattr(module, name, None)
+    if symbol is None:
+        raise AttributeError(f"{module.__name__}.{name} is required")
+    return symbol
+
+
+_SDK_API = _load_official_sdk_api()
+SDK_AVAILABLE = _SDK_API is not None
+SubsystemBaseInterface = (
+    _SDK_API.subsystem_base_interface
+    if _SDK_API is not None
+    else StubSubsystemBaseInterface
+)
+SubmitResult = _SDK_API.submit_receipt if _SDK_API is not None else StubSubmitResult
 
 
 class AnnouncementSubsystem(SubsystemBaseInterface):
     """Announcement runtime implementation of the SDK subsystem interface."""
 
-    def __init__(self, config: AnnouncementConfig) -> None:
+    def __init__(
+        self,
+        config: AnnouncementConfig,
+        *,
+        allow_sdk_stub: bool = False,
+    ) -> None:
+        if not SDK_AVAILABLE and not _stub_explicitly_allowed(allow_sdk_stub):
+            raise SubsystemSdkUnavailableError(
+                "subsystem-sdk is required for announcement runtime startup. "
+                f"Install the pinned dependency or set {TEST_STUB_ENV}=1 only "
+                "inside tests that intentionally use the local SDK stub."
+            )
         self.config = config
         self.run_id = str(uuid4())
         self.last_ex_id: str | None = None
@@ -57,11 +131,8 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
 
         spec = build_registration_spec(self.config)
         if SDK_AVAILABLE:
-            _call_sdk_hook(
-                ("subsystem_sdk", "subsystem_sdk.base.registration"),
-                ("register_subsystem",),
-                spec,
-                "registration",
+            _require_sdk_api().register_subsystem(
+                _to_sdk_registration_spec(spec, self.config),
             )
         return spec
 
@@ -78,14 +149,10 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
             status="degraded" if self.last_submit_failed else "ok",
         )
         if SDK_AVAILABLE:
-            _call_sdk_hook(
-                (
-                    "subsystem_sdk.heartbeat",
-                    "subsystem_sdk.heartbeat.client",
-                    "subsystem_sdk",
-                ),
-                ("send_heartbeat", "heartbeat"),
-                _payload_to_mapping(payload),
+            sdk_payload = _to_sdk_heartbeat_payload(payload)
+            _validate_sdk_payload("Ex-0", sdk_payload)
+            _ensure_accepted(
+                _require_sdk_api().send_heartbeat(sdk_payload),
                 "heartbeat",
             )
         return payload
@@ -95,17 +162,10 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
 
         ex_type = _payload_ex_type(candidate)
         if SDK_AVAILABLE:
+            sdk_payload = _to_sdk_submit_payload(candidate)
+            _validate_sdk_payload(ex_type, sdk_payload)
             result = _coerce_submit_result(
-                _call_sdk_hook(
-                    (
-                        "subsystem_sdk.submit",
-                        "subsystem_sdk.submit.client",
-                        "subsystem_sdk",
-                    ),
-                    ("submit",),
-                    _payload_to_mapping(candidate),
-                    "submit",
-                ),
+                _require_sdk_api().submit(sdk_payload),
                 ex_type,
             )
             if getattr(result, "accepted", False):
@@ -122,6 +182,16 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
             warnings=(),
             errors=(),
         )
+
+
+def _stub_explicitly_allowed(allow_sdk_stub: bool) -> bool:
+    return allow_sdk_stub or os.environ.get(TEST_STUB_ENV) == "1"
+
+
+def _require_sdk_api() -> _SdkApi:
+    if _SDK_API is None:
+        raise SubsystemSdkUnavailableError("subsystem-sdk API is unavailable")
+    return _SDK_API
 
 
 def _payload_ex_type(candidate: PayloadLike) -> str:
@@ -152,41 +222,78 @@ def _payload_to_mapping(candidate: PayloadLike) -> dict[str, Any]:
     return payload
 
 
-def _call_sdk_hook(
-    module_names: tuple[str, ...],
-    hook_names: tuple[str, ...],
-    payload: Any,
-    hook_kind: str,
+def _to_sdk_registration_spec(
+    spec: RegistrationSpec,
+    config: AnnouncementConfig,
 ) -> Any:
-    hook = _load_sdk_hook(module_names, hook_names)
-    if hook is None:
-        raise RuntimeError(f"subsystem-sdk {hook_kind} transport is unavailable")
-    return hook(payload)
+    sdk_api = _require_sdk_api()
+    return sdk_api.registration_spec(
+        subsystem_id=spec.module_id,
+        version=__version__,
+        domain="announcement",
+        supported_ex_types=spec.owned_ex_types,
+        owner=PACKAGE_NAME,
+        heartbeat_policy_ref=f"interval:{config.heartbeat_interval_seconds}s",
+        capabilities={
+            "parser_version": spec.parser_version,
+            "registration_ttl_seconds": spec.registration_ttl_seconds,
+            "sdk_endpoint": spec.sdk_endpoint,
+        },
+    )
 
 
-def _load_sdk_hook(
-    module_names: tuple[str, ...],
-    hook_names: tuple[str, ...],
-) -> SdkHook | None:
-    for module_name in module_names:
-        try:
-            module = importlib.import_module(module_name)
-        except ModuleNotFoundError as exc:
-            if exc.name is not None and (
-                exc.name == module_name or module_name.startswith(f"{exc.name}.")
-            ):
-                continue
-            raise
+def _to_sdk_heartbeat_payload(payload: HeartbeatPayload) -> dict[str, Any]:
+    return {
+        "subsystem_id": PACKAGE_NAME,
+        "version": __version__,
+        "heartbeat_at": payload.timestamp,
+        "status": payload.status,
+        "last_output_at": None,
+        "pending_count": 0,
+    }
 
-        for hook_name in hook_names:
-            hook = getattr(module, hook_name, None)
-            if callable(hook):
-                return hook
-    return None
+
+def _to_sdk_submit_payload(candidate: PayloadLike) -> dict[str, Any]:
+    payload = _payload_to_mapping(candidate)
+    if payload.get("ex_type") != "Ex-0":
+        return payload
+
+    heartbeat_at = payload.get("emitted_at")
+    if not isinstance(heartbeat_at, datetime):
+        heartbeat_at = datetime.now(timezone.utc)
+    return {
+        "ex_type": "Ex-0",
+        "subsystem_id": PACKAGE_NAME,
+        "version": __version__,
+        "heartbeat_at": heartbeat_at,
+        "status": "ok",
+        "last_output_at": heartbeat_at,
+        "pending_count": 0,
+    }
+
+
+def _validate_sdk_payload(ex_type: str, payload: Mapping[str, Any]) -> None:
+    _require_sdk_api().assert_producer_only(ex_type, payload)
+
+
+def _ensure_accepted(raw_result: Any, operation: str) -> None:
+    if raw_result is None:
+        return
+    accepted = (
+        raw_result.get("accepted")
+        if isinstance(raw_result, Mapping)
+        else getattr(raw_result, "accepted", None)
+    )
+    if accepted is None:
+        return
+    if bool(accepted):
+        return
+    raise RuntimeError(_rejection_message(raw_result, operation))
 
 
 def _coerce_submit_result(raw_result: Any, ex_type: str) -> SubmitResult:
-    if isinstance(raw_result, SubmitResult):
+    result_model = _submit_result_model()
+    if isinstance(raw_result, result_model):
         return raw_result
 
     if isinstance(raw_result, Mapping):
@@ -196,11 +303,56 @@ def _coerce_submit_result(raw_result: Any, ex_type: str) -> SubmitResult:
     else:
         result_data = {
             field: getattr(raw_result, field)
-            for field in ("accepted", "receipt_id", "warnings", "errors")
+            for field in (
+                "accepted",
+                "receipt_id",
+                "backend_kind",
+                "transport_ref",
+                "validator_version",
+                "warnings",
+                "errors",
+            )
             if hasattr(raw_result, field)
         }
 
-    result_data.setdefault("ex_type", ex_type)
     result_data.setdefault("warnings", ())
     result_data.setdefault("errors", ())
-    return SubmitResult(**result_data)
+    if not SDK_AVAILABLE:
+        result_data.setdefault("ex_type", ex_type)
+    return result_model(**result_data)
+
+
+def _submit_result_model() -> type[Any]:
+    if SDK_AVAILABLE and _SDK_API is not None:
+        return _SDK_API.submit_receipt
+    return StubSubmitResult
+
+
+def _rejection_message(result: Any, operation: str) -> str:
+    if isinstance(result, Mapping):
+        errors = _string_sequence(result.get("errors", ()))
+        warnings = _string_sequence(result.get("warnings", ()))
+    else:
+        errors = _string_sequence(getattr(result, "errors", ()))
+        warnings = _string_sequence(getattr(result, "warnings", ()))
+    detail = ", ".join(
+        part
+        for part in (
+            f"errors={errors}" if errors else "",
+            f"warnings={warnings}" if warnings else "",
+        )
+        if part
+    )
+    return f"subsystem-sdk {operation} rejected payload" + (
+        f": {detail}" if detail else ""
+    )
+
+
+def _string_sequence(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Sequence):
+        return tuple(str(item) for item in value)
+    return (str(value),)
