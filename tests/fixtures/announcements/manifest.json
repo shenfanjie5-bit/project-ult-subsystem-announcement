@@ -1,0 +1,95 @@
+{
+  "samples": [
+    {
+      "file": "sse-major-contract.pdf",
+      "attachment_type": "pdf",
+      "expected_min_sections": 1,
+      "expected_min_tables": 1,
+      "expected_success": true
+    },
+    {
+      "file": "sse-earnings-preannounce.pdf",
+      "attachment_type": "pdf",
+      "expected_min_sections": 1,
+      "expected_min_tables": 0,
+      "expected_success": true
+    },
+    {
+      "file": "szse-shareholder-change.pdf",
+      "attachment_type": "pdf",
+      "expected_min_sections": 1,
+      "expected_min_tables": 1,
+      "expected_success": true
+    },
+    {
+      "file": "cninfo-equity-pledge.html",
+      "attachment_type": "html",
+      "expected_min_sections": 1,
+      "expected_min_tables": 1,
+      "expected_success": true
+    },
+    {
+      "file": "cninfo-trading-resume.html",
+      "attachment_type": "html",
+      "expected_min_sections": 1,
+      "expected_min_tables": 0,
+      "expected_success": true
+    },
+    {
+      "file": "bse-regulatory-action.html",
+      "attachment_type": "html",
+      "expected_min_sections": 1,
+      "expected_min_tables": 0,
+      "expected_success": true
+    },
+    {
+      "file": "neeq-fundraising-change.docx",
+      "attachment_type": "word",
+      "expected_min_sections": 1,
+      "expected_min_tables": 1,
+      "expected_success": true
+    },
+    {
+      "file": "sse-cooperation.docx",
+      "attachment_type": "word",
+      "expected_min_sections": 1,
+      "expected_min_tables": 0,
+      "expected_success": true
+    },
+    {
+      "file": "szse-controller-change.docx",
+      "attachment_type": "word",
+      "expected_min_sections": 1,
+      "expected_min_tables": 1,
+      "expected_success": true
+    },
+    {
+      "file": "corrupt-empty.pdf",
+      "attachment_type": "pdf",
+      "expected_min_sections": 0,
+      "expected_min_tables": 0,
+      "expected_success": false
+    },
+    {
+      "file": "corrupt-empty.html",
+      "attachment_type": "html",
+      "expected_min_sections": 0,
+      "expected_min_tables": 0,
+      "expected_success": false
+    },
+    {
+      "file": "corrupt-empty.docx",
+      "attachment_type": "word",
+      "expected_min_sections": 0,
+      "expected_min_tables": 0,
+      "expected_success": false
+    },
+    {
+      "file": "ambiguous-relation.html",
+      "attachment_type": "html",
+      "expected_min_sections": 1,
+      "expected_min_tables": 0,
+      "expected_success": true
+    }
+  ]
+}
