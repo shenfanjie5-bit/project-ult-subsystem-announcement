@@ -22,7 +22,9 @@ class AnnouncementConfig(BaseModel):
     llama_index_version: str = "not-configured"
     reasoner_endpoint: str | None = None
     entity_registry_endpoint: str | None = None
+    sdk_endpoint: str | None = None
     heartbeat_interval_seconds: int = 60
+    registration_ttl_seconds: int = 900
 
 
 def load_config(path: Path | None = None) -> AnnouncementConfig:
