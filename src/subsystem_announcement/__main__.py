@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
 from . import __version__
 from .config import load_config
+from .logging_setup import configure_logging
 
 try:
     import typer
@@ -40,6 +42,63 @@ if typer is not None:
             typer.echo(f"doctor failed: {exc}", err=True)
             raise typer.Exit(code=1) from exc
         typer.echo("ok")
+
+    @app.command("ping")
+    def ping_command(
+        config: Path | None = typer.Option(
+            None,
+            "--config",
+            "-c",
+            help="Optional announcement TOML config path.",
+        ),
+    ) -> None:
+        """Run registration, one heartbeat, and one Ex-0 submit."""
+
+        try:
+            configure_logging()
+            runtime_config = load_config(config)
+            from .runtime.lifecycle import ping
+            from .runtime.sdk_adapter import SDK_AVAILABLE
+
+            if not SDK_AVAILABLE:
+                typer.echo("subsystem-sdk unavailable; using local SDK stub", err=True)
+            asyncio.run(ping(runtime_config))
+        except Exception as exc:
+            typer.echo(f"ping failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        typer.echo("ok")
+
+    @app.command("run")
+    def run_command(
+        config: Path | None = typer.Option(
+            None,
+            "--config",
+            "-c",
+            help="Optional announcement TOML config path.",
+        ),
+        once: bool = typer.Option(
+            False,
+            "--once",
+            help="Run one lifecycle iteration and exit.",
+        ),
+    ) -> None:
+        """Run the announcement subsystem lifecycle."""
+
+        try:
+            configure_logging()
+            runtime_config = load_config(config)
+            from .runtime.lifecycle import run
+            from .runtime.sdk_adapter import SDK_AVAILABLE
+
+            if not SDK_AVAILABLE:
+                typer.echo("subsystem-sdk unavailable; using local SDK stub", err=True)
+            asyncio.run(run(runtime_config, once=once))
+        except KeyboardInterrupt:
+            raise typer.Exit(code=130) from None
+        except Exception as exc:
+            typer.echo(f"run failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        typer.echo("ok")
 else:
     app = None
 
@@ -60,8 +119,44 @@ def _fallback_main(argv: list[str]) -> int:
             return 1
         print("ok")
         return 0
+    if command in {"ping", "run"}:
+        once = command == "ping" or "--once" in argv
+        config_path: Path | None = None
+        if "--config" in argv:
+            index = argv.index("--config")
+            if index + 1 < len(argv):
+                config_path = Path(argv[index + 1])
+        elif "-c" in argv:
+            index = argv.index("-c")
+            if index + 1 < len(argv):
+                config_path = Path(argv[index + 1])
+        try:
+            configure_logging()
+            runtime_config = load_config(config_path)
+            from .runtime.lifecycle import ping, run
+            from .runtime.sdk_adapter import SDK_AVAILABLE
 
-    print("usage: python -m subsystem_announcement [version|doctor]", file=sys.stderr)
+            if not SDK_AVAILABLE:
+                print(
+                    "subsystem-sdk unavailable; using local SDK stub",
+                    file=sys.stderr,
+                )
+            if command == "ping":
+                asyncio.run(ping(runtime_config))
+            else:
+                asyncio.run(run(runtime_config, once=once))
+        except KeyboardInterrupt:
+            return 130
+        except Exception as exc:
+            print(f"{command} failed: {exc}", file=sys.stderr)
+            return 1
+        print("ok")
+        return 0
+
+    print(
+        "usage: python -m subsystem_announcement [version|doctor|ping|run]",
+        file=sys.stderr,
+    )
     return 1
 
 

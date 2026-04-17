@@ -7,7 +7,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_CONFIG_PATH = Path("config/announcement.toml")
 
@@ -22,7 +22,9 @@ class AnnouncementConfig(BaseModel):
     llama_index_version: str = "not-configured"
     reasoner_endpoint: str | None = None
     entity_registry_endpoint: str | None = None
-    heartbeat_interval_seconds: int = 60
+    sdk_endpoint: str | None = None
+    heartbeat_interval_seconds: int = Field(60, gt=0, le=86_400)
+    registration_ttl_seconds: int = Field(900, gt=0, le=604_800)
 
 
 def load_config(path: Path | None = None) -> AnnouncementConfig:
