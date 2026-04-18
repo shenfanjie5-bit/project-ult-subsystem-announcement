@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,11 @@ from subsystem_announcement.parse.artifact import (
 from subsystem_announcement.parse.errors import ParseNormalizationError
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _dependency_name(dependency: str) -> str:
+    head = dependency.split(";", maxsplit=1)[0].strip()
+    return re.split(r"[<>=!~\[]", head, maxsplit=1)[0].strip().lower()
 
 
 def _document(local_path: Path) -> AnnouncementDocumentArtifact:
@@ -72,16 +78,15 @@ def _artifact(local_path: Path) -> ParsedAnnouncementArtifact:
 def test_docling_dependency_is_exactly_pinned() -> None:
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = pyproject["project"]["dependencies"]
-    docling_dependencies = [
-        dependency for dependency in dependencies if dependency.startswith("docling")
-    ]
+    dependencies_by_name = {
+        _dependency_name(dependency): dependency for dependency in dependencies
+    }
 
-    assert docling_dependencies == ["docling==2.15.1"]
-    assert not any(dependency.startswith("docling>=") for dependency in dependencies)
-    assert not any(
-        dependency.startswith("llama-index-node-parser-docling")
-        for dependency in dependencies
-    )
+    assert dependencies_by_name["docling"] == "docling==2.15.1"
+    assert dependencies_by_name["docling-core"] == "docling-core>=2.13.1,<3.0.0"
+    assert dependencies_by_name["llama-index-core"] == "llama-index-core==0.10.0"
+    assert "llama-index" not in dependencies_by_name
+    assert "llama-index-node-parser-docling" not in dependencies_by_name
 
 
 def test_parsed_artifact_round_trips_to_disk(tmp_path: Path) -> None:
