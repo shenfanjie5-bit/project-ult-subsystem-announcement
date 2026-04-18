@@ -39,7 +39,12 @@ class AnnouncementDedupeStore:
         metadata_path_text = self._read_index()["announcement_id"].get(announcement_id)
         if metadata_path_text is None:
             return None
-        return self._load_artifact(self._metadata_path_from_index(metadata_path_text))
+        artifact = self._load_artifact(
+            self._metadata_path_from_index(metadata_path_text)
+        )
+        if artifact.announcement_id != announcement_id:
+            return None
+        return artifact
 
     def find_by_content_hash(
         self,
@@ -72,11 +77,37 @@ class AnnouncementDedupeStore:
                     self._metadata_path_from_index(existing_for_id)
                 )
                 if existing_artifact.content_hash == artifact.content_hash:
-                    indexed_hash_path = index["content_hash"].get(
-                        artifact.content_hash
-                    )
-                    if indexed_hash_path != existing_for_id:
-                        index["content_hash"][artifact.content_hash] = existing_for_id
+                    if existing_artifact.announcement_id != target_announcement_id:
+                        canonical_metadata_path_text = index["content_hash"].get(
+                            artifact.content_hash,
+                            existing_for_id,
+                        )
+                        canonical_artifact = self._load_artifact(
+                            self._metadata_path_from_index(canonical_metadata_path_text)
+                        )
+                        announcement_artifact, metadata_path_text = (
+                            self._write_announcement_metadata(
+                                artifact=artifact,
+                                canonical_artifact=canonical_artifact,
+                                announcement_id=target_announcement_id,
+                            )
+                        )
+                        index["announcement_id"][
+                            target_announcement_id
+                        ] = metadata_path_text
+                        if artifact.content_hash not in index["content_hash"]:
+                            index["content_hash"][
+                                artifact.content_hash
+                            ] = canonical_metadata_path_text
+                        self._write_index(index)
+                        return
+                    if artifact.content_hash not in index["content_hash"]:
+                        index["content_hash"][
+                            artifact.content_hash
+                        ] = self._canonical_metadata_path_text(
+                            existing_artifact,
+                            fallback=existing_for_id,
+                        )
                         self._write_index(index)
                     return
                 raise DocumentCacheError(
@@ -86,11 +117,38 @@ class AnnouncementDedupeStore:
                     f"new_hash={artifact.content_hash}"
                 )
 
-            canonical_metadata_path = index["content_hash"].setdefault(
-                artifact.content_hash,
-                metadata_path_text,
-            )
-            index["announcement_id"][target_announcement_id] = canonical_metadata_path
+            canonical_metadata_path = index["content_hash"].get(artifact.content_hash)
+            if canonical_metadata_path is None:
+                index["content_hash"][artifact.content_hash] = metadata_path_text
+                if target_announcement_id == artifact.announcement_id:
+                    index["announcement_id"][
+                        target_announcement_id
+                    ] = metadata_path_text
+                else:
+                    announcement_artifact, alias_metadata_path_text = (
+                        self._write_announcement_metadata(
+                            artifact=artifact,
+                            canonical_artifact=artifact,
+                            announcement_id=target_announcement_id,
+                        )
+                    )
+                    index["announcement_id"][
+                        announcement_artifact.announcement_id
+                    ] = alias_metadata_path_text
+            else:
+                canonical_artifact = self._load_artifact(
+                    self._metadata_path_from_index(canonical_metadata_path)
+                )
+                announcement_artifact, duplicate_metadata_path_text = (
+                    self._write_announcement_metadata(
+                        artifact=artifact,
+                        canonical_artifact=canonical_artifact,
+                        announcement_id=target_announcement_id,
+                    )
+                )
+                index["announcement_id"][
+                    announcement_artifact.announcement_id
+                ] = duplicate_metadata_path_text
             self._write_index(index)
 
     def resolve_or_record(
@@ -116,8 +174,41 @@ class AnnouncementDedupeStore:
                         f"existing_hash={existing_artifact.content_hash} "
                         f"new_hash={content_hash}"
                     )
-                if index["content_hash"].get(content_hash) != existing_for_id:
-                    index["content_hash"][content_hash] = existing_for_id
+                if existing_artifact.announcement_id != announcement_id:
+                    canonical_metadata_path_text = index["content_hash"].get(
+                        content_hash,
+                        existing_for_id,
+                    )
+                    canonical_artifact = self._load_artifact(
+                        self._metadata_path_from_index(canonical_metadata_path_text)
+                    )
+                    artifact = create_artifact()
+                    self._validate_created_artifact(
+                        artifact,
+                        announcement_id=announcement_id,
+                        content_hash=content_hash,
+                    )
+                    announcement_artifact, metadata_path_text = (
+                        self._write_announcement_metadata(
+                            artifact=artifact,
+                            canonical_artifact=canonical_artifact,
+                            announcement_id=announcement_id,
+                        )
+                    )
+                    index["announcement_id"][announcement_id] = metadata_path_text
+                    if content_hash not in index["content_hash"]:
+                        index["content_hash"][
+                            content_hash
+                        ] = canonical_metadata_path_text
+                    self._write_index(index)
+                    return "duplicate", announcement_artifact
+                if content_hash not in index["content_hash"]:
+                    index["content_hash"][content_hash] = (
+                        self._canonical_metadata_path_text(
+                            existing_artifact,
+                            fallback=existing_for_id,
+                        )
+                    )
                     self._write_index(index)
                 return "duplicate", existing_artifact
 
@@ -126,23 +217,29 @@ class AnnouncementDedupeStore:
                 existing_artifact = self._load_artifact(
                     self._metadata_path_from_index(existing_for_hash)
                 )
-                index["announcement_id"][announcement_id] = existing_for_hash
+                artifact = create_artifact()
+                self._validate_created_artifact(
+                    artifact,
+                    announcement_id=announcement_id,
+                    content_hash=content_hash,
+                )
+                announcement_artifact, metadata_path_text = (
+                    self._write_announcement_metadata(
+                        artifact=artifact,
+                        canonical_artifact=existing_artifact,
+                        announcement_id=announcement_id,
+                    )
+                )
+                index["announcement_id"][announcement_id] = metadata_path_text
                 self._write_index(index)
-                return "duplicate", existing_artifact
+                return "duplicate", announcement_artifact
 
             artifact = create_artifact()
-            if artifact.announcement_id != announcement_id:
-                raise DocumentCacheError(
-                    "Cached artifact announcement_id mismatch: "
-                    f"announcement_id={announcement_id} "
-                    f"artifact_announcement_id={artifact.announcement_id}"
-                )
-            if artifact.content_hash != content_hash:
-                raise DocumentCacheError(
-                    "Cached artifact content_hash mismatch: "
-                    f"announcement_id={announcement_id} "
-                    f"expected_hash={content_hash} actual_hash={artifact.content_hash}"
-                )
+            self._validate_created_artifact(
+                artifact,
+                announcement_id=announcement_id,
+                content_hash=content_hash,
+            )
             metadata_path_text = self._metadata_path_to_index(
                 _metadata_path_for_document(artifact.local_path)
             )
@@ -177,7 +274,13 @@ class AnnouncementDedupeStore:
             )
             temp_path = Path(temp_path_text)
             with os.fdopen(fd, "w", encoding="utf-8") as temp_file:
-                json.dump(index, temp_file, ensure_ascii=False, indent=2, sort_keys=True)
+                json.dump(
+                    index,
+                    temp_file,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
                 temp_file.write("\n")
             temp_path.replace(self.index_path)
         except OSError as exc:
@@ -203,9 +306,108 @@ class AnnouncementDedupeStore:
             return artifact.model_copy(update={"local_path": document_path})
         return artifact
 
+    def _write_announcement_metadata(
+        self,
+        *,
+        artifact: AnnouncementDocumentArtifact,
+        canonical_artifact: AnnouncementDocumentArtifact,
+        announcement_id: str,
+    ) -> tuple[AnnouncementDocumentArtifact, str]:
+        if artifact.content_hash != canonical_artifact.content_hash:
+            raise DocumentCacheError(
+                "Duplicate announcement content_hash mismatch: "
+                f"announcement_id={announcement_id} "
+                f"artifact_hash={artifact.content_hash} "
+                f"canonical_hash={canonical_artifact.content_hash}"
+            )
+        announcement_artifact = artifact.model_copy(
+            update={
+                "announcement_id": announcement_id,
+                "local_path": canonical_artifact.local_path,
+            }
+        )
+        metadata_path = _metadata_path_for_announcement(
+            canonical_artifact.local_path,
+            canonical_artifact.content_hash,
+            announcement_id,
+        )
+        try:
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata_path.write_text(
+                announcement_artifact.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            raise DocumentCacheError(
+                "Unable to write announcement dedupe metadata: "
+                f"announcement_id={announcement_id} path={metadata_path}"
+            ) from exc
+
+        self._remove_redundant_artifact_files(
+            artifact=artifact,
+            canonical_artifact=canonical_artifact,
+        )
+        return announcement_artifact, self._metadata_path_to_index(metadata_path)
+
+    def _remove_redundant_artifact_files(
+        self,
+        *,
+        artifact: AnnouncementDocumentArtifact,
+        canonical_artifact: AnnouncementDocumentArtifact,
+    ) -> None:
+        if artifact.local_path == canonical_artifact.local_path:
+            return
+
+        paths = [
+            artifact.local_path,
+            _metadata_path_for_document(artifact.local_path),
+        ]
+        try:
+            for path in paths:
+                path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise DocumentCacheError(
+                "Unable to remove redundant duplicate document cache files: "
+                f"announcement_id={artifact.announcement_id} path={path}"
+            ) from exc
+
+    def _canonical_metadata_path_text(
+        self,
+        artifact: AnnouncementDocumentArtifact,
+        *,
+        fallback: str,
+    ) -> str:
+        metadata_path = _metadata_path_for_document(artifact.local_path)
+        if not metadata_path.exists():
+            return fallback
+        return self._metadata_path_to_index(metadata_path)
+
+    def _validate_created_artifact(
+        self,
+        artifact: AnnouncementDocumentArtifact,
+        *,
+        announcement_id: str,
+        content_hash: str,
+    ) -> None:
+        if artifact.announcement_id != announcement_id:
+            raise DocumentCacheError(
+                "Cached artifact announcement_id mismatch: "
+                f"announcement_id={announcement_id} "
+                f"artifact_announcement_id={artifact.announcement_id}"
+            )
+        if artifact.content_hash != content_hash:
+            raise DocumentCacheError(
+                "Cached artifact content_hash mismatch: "
+                f"announcement_id={announcement_id} "
+                f"expected_hash={content_hash} actual_hash={artifact.content_hash}"
+            )
+
     def _metadata_path_to_index(self, metadata_path: Path) -> str:
         try:
-            return str(metadata_path.resolve().relative_to(self.artifact_root.resolve()))
+            relative_path = metadata_path.resolve().relative_to(
+                self.artifact_root.resolve()
+            )
+            return str(relative_path)
         except ValueError as exc:
             raise DocumentCacheError(
                 "Dedupe metadata path escaped artifact_root: "
@@ -240,6 +442,17 @@ def _metadata_path_for_document(local_path: Path) -> Path:
     return local_path.with_name(f"{local_path.stem}.metadata.json")
 
 
+def _metadata_path_for_announcement(
+    canonical_local_path: Path,
+    content_hash: str,
+    announcement_id: str,
+) -> Path:
+    announcement_digest = hashlib.sha256(announcement_id.encode("utf-8")).hexdigest()
+    return canonical_local_path.with_name(
+        f"{content_hash}.announcement-{announcement_digest}.metadata.json"
+    )
+
+
 def _document_path_for_metadata(
     metadata_path: Path,
     artifact: AnnouncementDocumentArtifact,
@@ -247,5 +460,6 @@ def _document_path_for_metadata(
     metadata_suffix = ".metadata.json"
     if not metadata_path.name.endswith(metadata_suffix):
         return artifact.local_path
-    content_stem = metadata_path.name[: -len(metadata_suffix)]
-    return metadata_path.with_name(f"{content_stem}{artifact.local_path.suffix}")
+    return metadata_path.with_name(
+        f"{artifact.content_hash}{artifact.local_path.suffix}"
+    )
