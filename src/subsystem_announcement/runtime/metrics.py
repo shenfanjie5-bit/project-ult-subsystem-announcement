@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 from collections import Counter
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from subsystem_announcement.config import AnnouncementConfig
+from subsystem_announcement.discovery.dedupe import compute_content_hash
+from subsystem_announcement.discovery.document import AnnouncementDocumentArtifact
 from subsystem_announcement.extract import (
     AnnouncementFactCandidate,
     FactType,
@@ -22,12 +27,23 @@ from subsystem_announcement.graph.guard import (
     has_ambiguous_graph_language,
 )
 from subsystem_announcement.graph.rules import classify_graph_delta_intent
-from subsystem_announcement.index import chunk_parsed_artifact
+from subsystem_announcement.index import (
+    AnnouncementRetrievalArtifact,
+    build_retrieval_artifact,
+)
+from subsystem_announcement.parse import parse_announcement
 from subsystem_announcement.parse.artifact import (
     ParsedAnnouncementArtifact,
     load_parsed_artifact,
 )
 from subsystem_announcement.parse.errors import ParseNormalizationError
+
+
+ParseFunc = Callable[
+    [AnnouncementDocumentArtifact, AnnouncementConfig],
+    ParsedAnnouncementArtifact,
+]
+BuildRetrievalFunc = Callable[..., AnnouncementRetrievalArtifact]
 
 
 class MetricThresholds(BaseModel):
@@ -71,8 +87,10 @@ def compute_metrics_for_manifest(
     manifest_path: Path,
     *,
     config: AnnouncementConfig,
+    parse_func: ParseFunc = parse_announcement,
+    build_retrieval_func: BuildRetrievalFunc = build_retrieval_artifact,
 ) -> MetricsRegressionReport:
-    """Compute regression metrics for fixture parsed artifacts in a manifest."""
+    """Compute regression metrics from fixture documents in a manifest."""
 
     manifest_file = Path(manifest_path)
     manifest = _load_manifest(manifest_file)
@@ -115,30 +133,63 @@ def compute_metrics_for_manifest(
         if parsed_path is None:
             diagnostics.append(f"{sample_id}: missing fixture_paths.parsed_artifact")
             continue
+        document_path = _fixture_path(raw_sample, manifest_root, "document")
+        if document_path is None:
+            diagnostics.append(f"{sample_id}: missing fixture_paths.document")
+            continue
         try:
-            parse_started = time.perf_counter()
-            parsed_artifact = _load_sample_parsed_artifact(
+            reference_artifact = _load_sample_parsed_artifact(
                 parsed_path,
                 sample_key=sample_id,
                 announcement_id=str(raw_sample.get("announcement_id") or ""),
             )
+            document_artifact = _document_artifact_from_sample(
+                raw_sample,
+                document_path,
+                reference_artifact,
+            )
+        except Exception as exc:
+            diagnostics.append(f"{sample_id}: unable to load fixture document: {exc}")
+            continue
+
+        try:
+            parse_started = time.perf_counter()
+            parsed_artifact = parse_func(document_artifact, config)
             parse_seconds_max = max(
                 parse_seconds_max,
                 time.perf_counter() - parse_started,
             )
         except Exception as exc:
-            diagnostics.append(f"{sample_id}: unable to load parsed artifact: {exc}")
+            diagnostics.append(f"{sample_id}: unable to parse fixture document: {exc}")
             continue
 
         index_started = time.perf_counter()
         try:
-            chunk_parsed_artifact(parsed_artifact)
+            with tempfile.TemporaryDirectory(
+                prefix=f"announcement-metrics-{sample_id}-"
+            ) as tmp_dir:
+                build_retrieval_func(
+                    parsed_artifact,
+                    config=config,
+                    parsed_artifact_path=None,
+                    output_root=Path(tmp_dir) / "index",
+                )
         except Exception as exc:
-            diagnostics.append(f"{sample_id}: unable to build chunk index: {exc}")
+            diagnostics.append(f"{sample_id}: unable to build retrieval index: {exc}")
         else:
             index_seconds_max = max(
                 index_seconds_max,
                 time.perf_counter() - index_started,
+            )
+
+        if parsed_artifact.parser_version != config.docling_version:
+            diagnostics.append(
+                f"{sample_id}: parser_version {parsed_artifact.parser_version!r} "
+                f"does not match config {config.docling_version!r}"
+            )
+        if parsed_artifact.content_hash != document_artifact.content_hash:
+            diagnostics.append(
+                f"{sample_id}: parsed content_hash does not match fixture document"
             )
 
         if _has_official_source(parsed_artifact):
@@ -361,6 +412,46 @@ def _load_sample_parsed_artifact(
     raise ValueError(
         "parsed artifact fixture does not contain the requested sample: "
         f"path={path} sample_key={sample_key} announcement_id={announcement_id}"
+    )
+
+
+def _document_artifact_from_sample(
+    sample: dict[str, Any],
+    document_path: Path,
+    reference_artifact: ParsedAnnouncementArtifact,
+) -> AnnouncementDocumentArtifact:
+    try:
+        content = Path(document_path).read_bytes()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to read fixture document: path={document_path}"
+        ) from exc
+
+    source_document = reference_artifact.source_document
+    source_exchange = sample.get("source_exchange")
+    attachment_type = sample.get("attachment_type")
+    fetched_at = source_document.fetched_at or datetime.now(timezone.utc)
+    return AnnouncementDocumentArtifact(
+        announcement_id=str(sample.get("announcement_id") or ""),
+        ts_code=source_document.ts_code,
+        title=source_document.title,
+        publish_time=source_document.publish_time,
+        content_hash=compute_content_hash(content),
+        official_url=source_document.official_url,
+        source_exchange=(
+            source_exchange
+            if isinstance(source_exchange, str)
+            else source_document.source_exchange
+        ),
+        attachment_type=(
+            attachment_type
+            if attachment_type in {"pdf", "html", "word"}
+            else source_document.attachment_type
+        ),
+        local_path=Path(document_path),
+        content_type=source_document.content_type,
+        byte_size=len(content),
+        fetched_at=fetched_at,
     )
 
 

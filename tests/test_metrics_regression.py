@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 
 from subsystem_announcement.config import AnnouncementConfig
+from subsystem_announcement.discovery.document import AnnouncementDocumentArtifact
 from subsystem_announcement.extract import extract_fact_candidates
 from subsystem_announcement.graph import derive_graph_delta_candidates
+from subsystem_announcement.index import AnnouncementRetrievalArtifact
 from subsystem_announcement.parse.artifact import ParsedAnnouncementArtifact
 from subsystem_announcement.runtime.metrics import (
     MetricThresholds,
@@ -54,7 +56,12 @@ def test_manifest_has_stage3_sample_baseline() -> None:
 
 
 def test_metrics_report_satisfies_stage3_thresholds() -> None:
-    report = compute_metrics_for_manifest(MANIFEST, config=_config())
+    report = compute_metrics_for_manifest(
+        MANIFEST,
+        config=_config(),
+        parse_func=_fixture_parse,
+        build_retrieval_func=_fixture_build_retrieval,
+    )
 
     assert report.sample_count == 13
     assert report.evaluated_sample_count == 10
@@ -79,6 +86,11 @@ def test_metrics_timings_are_measured_not_read_from_manifest(
             "discovery_to_ex1_seconds": 999,
             "index_seconds": 999,
         }
+        document_fixture = sample.get("fixture_paths", {}).get("document")
+        if document_fixture:
+            sample["fixture_paths"]["document"] = str(
+                MANIFEST.parent / document_fixture
+            )
         parsed_fixture = sample.get("fixture_paths", {}).get("parsed_artifact")
         if parsed_fixture:
             sample["fixture_paths"]["parsed_artifact"] = str(
@@ -90,7 +102,12 @@ def test_metrics_timings_are_measured_not_read_from_manifest(
         encoding="utf-8",
     )
 
-    report = compute_metrics_for_manifest(copied_manifest, config=_config())
+    report = compute_metrics_for_manifest(
+        copied_manifest,
+        config=_config(),
+        parse_func=_fixture_parse,
+        build_retrieval_func=_fixture_build_retrieval,
+    )
 
     assert report.parse_seconds_max < 999
     assert report.discovery_to_ex1_seconds_max < 999
@@ -98,8 +115,55 @@ def test_metrics_timings_are_measured_not_read_from_manifest(
     assert report.diagnostics == []
 
 
+def test_metrics_parse_and_vector_index_paths_are_exercised() -> None:
+    parsed_ids: list[str] = []
+    indexed_ids: list[str] = []
+
+    def parse_spy(
+        document: AnnouncementDocumentArtifact,
+        config: AnnouncementConfig,
+    ) -> ParsedAnnouncementArtifact:
+        parsed_ids.append(document.announcement_id)
+        return _fixture_parse(document, config)
+
+    def index_spy(
+        parsed_artifact: ParsedAnnouncementArtifact,
+        *,
+        config: AnnouncementConfig,
+        parsed_artifact_path: Path | None = None,
+        output_root: Path | None = None,
+    ) -> AnnouncementRetrievalArtifact:
+        indexed_ids.append(parsed_artifact.announcement_id)
+        return _fixture_build_retrieval(
+            parsed_artifact,
+            config=config,
+            parsed_artifact_path=parsed_artifact_path,
+            output_root=output_root,
+        )
+
+    compute_metrics_for_manifest(
+        MANIFEST,
+        config=_config(),
+        parse_func=parse_spy,
+        build_retrieval_func=index_spy,
+    )
+
+    successful_ids = [
+        sample["announcement_id"]
+        for sample in json.loads(MANIFEST.read_text(encoding="utf-8"))["samples"]
+        if sample["expected_success"]
+    ]
+    assert parsed_ids == successful_ids
+    assert indexed_ids == successful_ids
+
+
 def test_assert_metrics_checks_all_stage3_thresholds() -> None:
-    report = compute_metrics_for_manifest(MANIFEST, config=_config())
+    report = compute_metrics_for_manifest(
+        MANIFEST,
+        config=_config(),
+        parse_func=_fixture_parse,
+        build_retrieval_func=_fixture_build_retrieval,
+    )
     bad_report = report.model_copy(
         update={
             "parse_seconds_max": 181,
@@ -141,7 +205,12 @@ def test_ambiguous_relation_sample_produces_no_ex3_with_diagnostic() -> None:
     artifact = _manifest_artifact("ANN-SAMPLE-009")
     facts = extract_fact_candidates(artifact)
     graph_deltas = derive_graph_delta_candidates(facts)
-    report = compute_metrics_for_manifest(MANIFEST, config=_config())
+    report = compute_metrics_for_manifest(
+        MANIFEST,
+        config=_config(),
+        parse_func=_fixture_parse,
+        build_retrieval_func=_fixture_build_retrieval,
+    )
 
     assert graph_deltas == []
     assert report.graph_guard_rejection_counts["ambiguous_language"] >= 1
@@ -200,3 +269,35 @@ def _manifest_artifact(sample_id: str) -> ParsedAnnouncementArtifact:
         ).read_text(encoding="utf-8")
     )
     return ParsedAnnouncementArtifact.model_validate(fixture[sample_id])
+
+
+def _fixture_parse(
+    document: AnnouncementDocumentArtifact,
+    config: AnnouncementConfig,
+) -> ParsedAnnouncementArtifact:
+    return _manifest_artifact(document.announcement_id).model_copy(
+        update={
+            "content_hash": document.content_hash,
+            "parser_version": config.docling_version,
+            "source_document": document,
+        }
+    )
+
+
+def _fixture_build_retrieval(
+    parsed_artifact: ParsedAnnouncementArtifact,
+    *,
+    config: AnnouncementConfig,
+    parsed_artifact_path: Path | None = None,
+    output_root: Path | None = None,
+) -> AnnouncementRetrievalArtifact:
+    return AnnouncementRetrievalArtifact(
+        announcement_id=parsed_artifact.announcement_id,
+        chunk_refs=[f"chunk:{parsed_artifact.announcement_id}:1"],
+        index_ref=str((output_root or Path(config.artifact_root)) / "vector_store"),
+        parser_version=parsed_artifact.parser_version,
+        llama_index_version=config.llama_index_version,
+        chunk_count=1,
+        built_at=parsed_artifact.parsed_at,
+        source_parsed_artifact_path=parsed_artifact_path,
+    )

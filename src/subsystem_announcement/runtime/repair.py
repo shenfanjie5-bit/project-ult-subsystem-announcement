@@ -222,7 +222,12 @@ def _write_versioned_upgrade_artifact(
     upgrade_root = _upgrade_artifact_root(artifact, config)
     repair_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     path = upgrade_root / f"{repair_id}-{uuid4().hex}-{artifact.content_hash}.json"
-    _write_json_atomic(path, artifact.model_dump_json(indent=2))
+    _write_json_atomic(
+        path,
+        artifact.model_dump_json(indent=2),
+        config=config,
+        announcement_id=artifact.announcement_id,
+    )
     return path
 
 
@@ -245,7 +250,12 @@ def _write_latest_upgrade_pointer(
         "parsed_artifact_path": str(artifact_path),
         "repaired_at": repaired_at.isoformat(),
     }
-    _write_json_atomic(pointer_path, _json_dumps(payload))
+    _write_json_atomic(
+        pointer_path,
+        _json_dumps(payload),
+        config=config,
+        announcement_id=artifact.announcement_id,
+    )
     return pointer_path
 
 
@@ -272,17 +282,34 @@ def _parsed_announcement_root(
     return announcement_root
 
 
-def _write_json_atomic(path: Path, content: str) -> None:
+def _write_json_atomic(
+    path: Path,
+    content: str,
+    *,
+    config: AnnouncementConfig,
+    announcement_id: str,
+) -> None:
     target = Path(path)
-    parent = target.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    if parent.is_symlink():
-        raise RepairError(f"Repair artifact directory is a symlink: path={parent}")
-    if target.exists() and target.is_symlink():
+    announcement_root, resolved_announcement_root = _prepare_repair_announcement_root(
+        config,
+        announcement_id,
+    )
+    parent = _prepare_repair_parent_directory(
+        announcement_root,
+        target.parent,
+        resolved_announcement_root,
+        announcement_id=announcement_id,
+    )
+    _ensure_repair_path_under_root(target, resolved_announcement_root)
+    if target.is_symlink():
         raise RepairError(f"Repair artifact path is a symlink: path={target}")
     temp_path = parent / f".{target.name}.{uuid4().hex}.tmp"
+    _ensure_repair_path_under_root(temp_path, resolved_announcement_root)
+    if temp_path.is_symlink():
+        raise RepairError(f"Repair temp artifact path is a symlink: path={temp_path}")
     try:
-        temp_path.write_text(content, encoding="utf-8")
+        with temp_path.open("x", encoding="utf-8") as temp_file:
+            temp_file.write(content)
         temp_path.replace(target)
     except OSError as exc:
         raise RepairError(f"Unable to write repair artifact: path={target}") from exc
@@ -292,6 +319,113 @@ def _write_json_atomic(path: Path, content: str) -> None:
                 temp_path.unlink()
         except OSError:
             pass
+
+
+def _prepare_repair_announcement_root(
+    config: AnnouncementConfig,
+    announcement_id: str,
+) -> tuple[Path, Path]:
+    parsed_root = Path(config.artifact_root) / "parsed"
+    announcement_root = _parsed_announcement_root(config, announcement_id)
+    safe_announcement_id = _safe_path_component(
+        announcement_id,
+        field_name="announcement_id",
+    )
+
+    if parsed_root.is_symlink():
+        raise RepairError(
+            "Repair parsed artifact root is a symlink: "
+            f"announcement_id={safe_announcement_id} path={parsed_root}"
+        )
+    parsed_root.mkdir(parents=True, exist_ok=True)
+    if parsed_root.is_symlink():
+        raise RepairError(
+            "Repair parsed artifact root is a symlink: "
+            f"announcement_id={safe_announcement_id} path={parsed_root}"
+        )
+    if not parsed_root.is_dir():
+        raise RepairError(
+            "Repair parsed artifact root is not a directory: "
+            f"announcement_id={safe_announcement_id} path={parsed_root}"
+        )
+    resolved_parsed_root = parsed_root.resolve()
+
+    if announcement_root.is_symlink():
+        raise RepairError(
+            "Repair parsed announcement directory is a symlink: "
+            f"announcement_id={safe_announcement_id} path={announcement_root}"
+        )
+    announcement_root.mkdir(exist_ok=True)
+    if announcement_root.is_symlink():
+        raise RepairError(
+            "Repair parsed announcement directory is a symlink: "
+            f"announcement_id={safe_announcement_id} path={announcement_root}"
+        )
+    if not announcement_root.is_dir():
+        raise RepairError(
+            "Repair parsed announcement path is not a directory: "
+            f"announcement_id={safe_announcement_id} path={announcement_root}"
+        )
+
+    resolved_announcement_root = announcement_root.resolve()
+    _ensure_repair_path_under_root(
+        resolved_announcement_root,
+        resolved_parsed_root,
+    )
+    return announcement_root, resolved_announcement_root
+
+
+def _prepare_repair_parent_directory(
+    announcement_root: Path,
+    parent: Path,
+    resolved_announcement_root: Path,
+    *,
+    announcement_id: str,
+) -> Path:
+    try:
+        relative_parent = parent.relative_to(announcement_root)
+    except ValueError as exc:
+        raise RepairError(
+            "Repair artifact directory escaped parsed announcement root: "
+            f"announcement_id={announcement_id} path={parent} "
+            f"root={announcement_root}"
+        ) from exc
+
+    current = announcement_root
+    if relative_parent == Path("."):
+        return current
+
+    for part in relative_parent.parts:
+        _safe_path_component(part, field_name="repair_path_component")
+        current = current / part
+        if current.is_symlink():
+            raise RepairError(
+                "Repair artifact directory is a symlink: "
+                f"announcement_id={announcement_id} path={current}"
+            )
+        current.mkdir(exist_ok=True)
+        if current.is_symlink():
+            raise RepairError(
+                "Repair artifact directory is a symlink: "
+                f"announcement_id={announcement_id} path={current}"
+            )
+        if not current.is_dir():
+            raise RepairError(
+                "Repair artifact path is not a directory: "
+                f"announcement_id={announcement_id} path={current}"
+            )
+        _ensure_repair_path_under_root(current, resolved_announcement_root)
+    return current
+
+
+def _ensure_repair_path_under_root(path: Path, resolved_root: Path) -> None:
+    try:
+        path.resolve(strict=False).relative_to(resolved_root)
+    except ValueError as exc:
+        raise RepairError(
+            "Repair artifact path escaped parsed announcement root: "
+            f"path={path} root={resolved_root}"
+        ) from exc
 
 
 def _safe_path_component(value: str, *, field_name: str) -> str:

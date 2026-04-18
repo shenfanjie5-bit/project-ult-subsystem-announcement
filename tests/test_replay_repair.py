@@ -294,6 +294,40 @@ def test_docling_upgrade_repair_preserves_previous_parse_when_index_fails(
     assert not (previous_path.parent / "latest.json").exists()
 
 
+def test_docling_upgrade_repair_rejects_symlinked_announcement_directory(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    document = _cache_document(config, "ANN-REPAIR-SYMLINK")
+    parsed_root = Path(config.artifact_root) / "parsed"
+    parsed_root.mkdir()
+    escaped_root = tmp_path / "escaped-parsed-root"
+    escaped_root.mkdir()
+    (parsed_root / document.announcement_id).symlink_to(
+        escaped_root,
+        target_is_directory=True,
+    )
+
+    try:
+        repair_parsed_artifact(
+            RepairRequest(
+                document_path=document.local_path,
+                reason=RepairReason.DOCLING_VERSION_UPGRADE,
+                rebuild_index=False,
+            ),
+            config,
+            parse_func=_fake_parse,
+        )
+    except RepairError as exc:
+        assert "symlink" in str(exc)
+        assert document.announcement_id in str(exc)
+    else:
+        raise AssertionError("symlinked repair artifact directory was accepted")
+
+    assert not (escaped_root / "latest.json").exists()
+    assert not (escaped_root / "upgrades").exists()
+
+
 def test_repair_rejects_conflicting_document_locators(
     tmp_path: Path,
 ) -> None:
