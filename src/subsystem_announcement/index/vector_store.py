@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -42,11 +43,10 @@ class AnnouncementVectorIndexRef(BaseModel):
 
 @dataclass(frozen=True)
 class _LlamaIndexApi:
-    Document: Any
+    TextNode: Any
     StorageContext: Any
     VectorStoreIndex: Any
     SimpleVectorStore: Any
-    DoclingNodeParser: Any
     load_index_from_storage: Any
 
 
@@ -65,16 +65,14 @@ def build_vector_index(
     llama_index_version = resolve_llama_index_version(config.llama_index_version)
     api = _load_llama_index_api()
     embedding = _resolve_embed_model(config=config, embed_model=embed_model)
-    documents = [_document_from_chunk(api.Document, chunk) for chunk in chunks]
+    nodes = [_node_from_chunk(api.TextNode, chunk) for chunk in chunks]
     vector_store = api.SimpleVectorStore()
     storage_context = api.StorageContext.from_defaults(vector_store=vector_store)
-    node_parser = api.DoclingNodeParser()
 
-    index = _index_from_documents(
+    index = _index_from_nodes(
         api,
-        documents,
+        nodes,
         storage_context=storage_context,
-        node_parser=node_parser,
         embed_model=embedding,
     )
 
@@ -156,8 +154,8 @@ def resolve_llama_index_version(version_pin: str) -> str:
     except metadata.PackageNotFoundError as exc:
         raise RuntimeError(
             "LlamaIndex dependency is not installed for the configured exact "
-            f"pin {configured!r}. Install the locked LlamaIndex and "
-            "DoclingNodeParser dependencies before building retrieval indexes."
+            f"pin {configured!r}. Install the locked LlamaIndex core dependency "
+            "before building retrieval indexes."
         ) from exc
     if installed_version != expected_version:
         raise RuntimeError(
@@ -167,7 +165,7 @@ def resolve_llama_index_version(version_pin: str) -> str:
     return f"{package_name}=={installed_version}"
 
 
-def _document_from_chunk(Document: Any, chunk: AnnouncementChunk) -> Any:
+def _node_from_chunk(TextNode: Any, chunk: AnnouncementChunk) -> Any:
     metadata_payload = {
         "chunk_id": chunk.chunk_id,
         "announcement_id": chunk.announcement_id,
@@ -179,48 +177,60 @@ def _document_from_chunk(Document: Any, chunk: AnnouncementChunk) -> Any:
         "title_path": chunk.title_path,
         "source_reference": chunk.source_reference,
     }
-    return Document(text=chunk.text, metadata=metadata_payload)
+    try:
+        node = TextNode(text=chunk.text, metadata=metadata_payload, id_=chunk.chunk_id)
+    except TypeError:
+        node = TextNode(text=chunk.text, metadata=metadata_payload)
+        _set_node_id(node, chunk.chunk_id)
+    if _node_id(node) != chunk.chunk_id:
+        _set_node_id(node, chunk.chunk_id)
+    if _node_id(node) != chunk.chunk_id:
+        raise RuntimeError(
+            "Unable to pin LlamaIndex node id to announcement chunk id: "
+            f"chunk_id={chunk.chunk_id!r}"
+        )
+    return node
 
 
-def _index_from_documents(
+def _index_from_nodes(
     api: _LlamaIndexApi,
-    documents: Sequence[Any],
+    nodes: Sequence[Any],
     *,
     storage_context: Any,
-    node_parser: Any,
     embed_model: Any,
 ) -> Any:
     try:
-        return api.VectorStoreIndex.from_documents(
-            documents,
+        return api.VectorStoreIndex(
+            nodes=list(nodes),
             storage_context=storage_context,
-            transformations=[node_parser],
             embed_model=embed_model,
         )
     except TypeError:
         settings = _try_load_settings()
         if settings is None:
-            return api.VectorStoreIndex.from_documents(
-                documents,
+            return api.VectorStoreIndex(
+                nodes=list(nodes),
                 storage_context=storage_context,
-                transformations=[node_parser],
             )
         previous_embed_model = getattr(settings, "embed_model", None)
         settings.embed_model = embed_model
         try:
-            return api.VectorStoreIndex.from_documents(
-                documents,
+            return api.VectorStoreIndex(
+                nodes=list(nodes),
                 storage_context=storage_context,
-                transformations=[node_parser],
             )
         finally:
             settings.embed_model = previous_embed_model
 
 
 def _load_llama_index_api() -> _LlamaIndexApi:
+    if sys.modules.get("llama_index") is None and "llama_index" in sys.modules:
+        raise RuntimeError(
+            "LlamaIndex core is required for announcement retrieval indexes. "
+            "Install the exact llama-index-core pin."
+        )
     try:
         from llama_index.core import (  # type: ignore[import-not-found]
-            Document,
             StorageContext,
             VectorStoreIndex,
             load_index_from_storage,
@@ -230,6 +240,17 @@ def _load_llama_index_api() -> _LlamaIndexApi:
             "LlamaIndex core is required for announcement retrieval indexes. "
             "Install the exact llama-index-core pin."
         ) from exc
+
+    try:
+        from llama_index.core.schema import TextNode  # type: ignore[import-not-found]
+    except (ImportError, ModuleNotFoundError):
+        try:
+            from llama_index.core import TextNode  # type: ignore[import-not-found]
+        except (ImportError, ModuleNotFoundError) as exc:
+            raise RuntimeError(
+                "LlamaIndex TextNode is required for announcement retrieval "
+                "indexes. Install the exact llama-index-core pin."
+            ) from exc
 
     try:
         from llama_index.core.vector_stores import (  # type: ignore[import-not-found]
@@ -246,29 +267,30 @@ def _load_llama_index_api() -> _LlamaIndexApi:
                 "retrieval indexes. Install the exact llama-index-core pin."
             ) from exc
 
-    try:
-        from llama_index.node_parser.docling import (  # type: ignore[import-not-found]
-            DoclingNodeParser,
-        )
-    except (ImportError, ModuleNotFoundError):
-        try:
-            from llama_index.node_parser.docling.base import (  # type: ignore[import-not-found]
-                DoclingNodeParser,
-            )
-        except (ImportError, ModuleNotFoundError) as exc:
-            raise RuntimeError(
-                "LlamaIndex DoclingNodeParser is required for announcement "
-                "retrieval indexes. Install the exact "
-                "llama-index-node-parser-docling pin."
-            ) from exc
     return _LlamaIndexApi(
-        Document=Document,
+        TextNode=TextNode,
         StorageContext=StorageContext,
         VectorStoreIndex=VectorStoreIndex,
         SimpleVectorStore=SimpleVectorStore,
-        DoclingNodeParser=DoclingNodeParser,
         load_index_from_storage=load_index_from_storage,
     )
+
+
+def _node_id(node: Any) -> str | None:
+    for attr_name in ("node_id", "id_", "id"):
+        value = getattr(node, attr_name, None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _set_node_id(node: Any, chunk_id: str) -> None:
+    for attr_name in ("id_", "node_id", "id"):
+        try:
+            setattr(node, attr_name, chunk_id)
+            return
+        except Exception:
+            continue
 
 
 def _resolve_embed_model(

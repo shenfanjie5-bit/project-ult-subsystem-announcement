@@ -45,7 +45,21 @@ def test_build_vector_index_persists_simple_vector_store(
     assert ref.embedding_strategy.model_dimension == 384
     assert ref.chunk_ids == [chunk.chunk_id for chunk in chunks]
     assert (tmp_path / "vector-store" / "fake_vector_index.json").exists()
-    assert installed["docling_parser_calls"] == 1
+    assert installed["build_node_ids"] == [chunk.chunk_id for chunk in chunks]
+    assert installed["build_node_metadata"] == [
+        {
+            "chunk_id": chunk.chunk_id,
+            "announcement_id": chunk.announcement_id,
+            "chunk_type": chunk.chunk_type,
+            "section_id": chunk.section_id,
+            "table_ref": chunk.table_ref,
+            "start_offset": chunk.start_offset,
+            "end_offset": chunk.end_offset,
+            "title_path": chunk.title_path,
+            "source_reference": chunk.source_reference,
+        }
+        for chunk in chunks
+    ]
 
 
 def test_query_returns_section_and_table_keyword_hits(
@@ -211,6 +225,61 @@ def test_query_uses_semantic_vectors_without_exact_word_overlap(
     assert hits[0].chunk_id == chunks[1].chunk_id
 
 
+def test_build_vector_index_pins_chunk_identity_through_load_and_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed = _install_fake_llama_index(monkeypatch)
+    embedding = FakeSemanticEmbedding()
+    config = AnnouncementConfig(llama_index_version="llama-index-core==0.10.0")
+    chunks = [
+        _chunk(
+            "chunk:ann-semantic:sec-0001:section:inquiry",
+            "sec-0001",
+            "公司收到上海证券交易所监管问询函，将按要求及时回复。",
+        ),
+        _chunk(
+            "chunk:ann-semantic:sec-0002:section:dividend",
+            "sec-0002",
+            "公司完成现金分红方案实施，权益分派已办理完毕。",
+        ),
+    ]
+    index_ref = build_vector_index(
+        chunks,
+        persist_dir=tmp_path / "vector-store",
+        config=config,
+        embed_model=embedding,
+    )
+    artifact = AnnouncementRetrievalArtifact(
+        announcement_id="ann-semantic",
+        chunk_refs=[chunk.chunk_id for chunk in chunks],
+        index_ref=index_ref.index_ref,
+        parser_version="docling==2.15.1",
+        llama_index_version=index_ref.llama_index_version,
+        embedding_strategy=index_ref.embedding_strategy,
+        chunk_count=len(chunks),
+        built_at=index_ref.built_at,
+        source_parsed_artifact_path=None,
+        chunks=chunks,
+    )
+
+    persisted = json.loads(
+        (tmp_path / "vector-store" / "fake_vector_index.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    hits = query("交易所关注函", artifact, top_k=1, embed_model=embedding)
+
+    assert [node["node_id"] for node in persisted["nodes"]] == [
+        chunk.chunk_id for chunk in chunks
+    ]
+    assert [node["metadata"]["chunk_id"] for node in persisted["nodes"]] == [
+        chunk.chunk_id for chunk in chunks
+    ]
+    assert installed["load_node_ids"] == [chunk.chunk_id for chunk in chunks]
+    assert hits[0].chunk_id == chunks[0].chunk_id
+
+
 def test_query_semantic_hit_beats_lexical_only_distractor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -367,15 +436,28 @@ def _chunk(chunk_id: str, section_id: str, text: str) -> AnnouncementChunk:
 
 def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     calls: dict[str, Any] = {
-        "docling_parser_calls": 0,
+        "build_node_ids": [],
+        "build_node_metadata": [],
+        "load_node_ids": [],
         "build_embed_models": [],
         "load_embed_models": [],
     }
 
-    class FakeDocument:
-        def __init__(self, *, text: str, metadata: dict[str, Any]) -> None:
+    class FakeTextNode:
+        def __init__(
+            self,
+            *,
+            text: str,
+            metadata: dict[str, Any],
+            id_: str | None = None,
+        ) -> None:
             self.text = text
             self.metadata = metadata
+            self.id_ = id_ or "generated-node-id"
+
+        @property
+        def node_id(self) -> str:
+            return self.id_
 
         def get_content(self) -> str:
             return self.text
@@ -392,14 +474,18 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
         ) -> None:
             self.vector_store = vector_store
             self.persist_dir = persist_dir
-            self.documents: list[FakeDocument] = []
+            self.nodes: list[FakeTextNode] = []
             self.embeddings: list[list[float]] = []
             if persist_dir is not None:
                 index_path = Path(persist_dir) / "fake_vector_index.json"
                 data = json.loads(index_path.read_text(encoding="utf-8"))
-                self.documents = [
-                    FakeDocument(text=item["text"], metadata=item["metadata"])
-                    for item in data["documents"]
+                self.nodes = [
+                    FakeTextNode(
+                        text=item["text"],
+                        metadata=item["metadata"],
+                        id_=item["node_id"],
+                    )
+                    for item in data["nodes"]
                 ]
                 self.embeddings = data.get("embeddings", [])
 
@@ -411,9 +497,13 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
             output_dir = Path(persist_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             payload = {
-                "documents": [
-                    {"text": document.text, "metadata": document.metadata}
-                    for document in self.documents
+                "nodes": [
+                    {
+                        "node_id": node.node_id,
+                        "text": node.text,
+                        "metadata": node.metadata,
+                    }
+                    for node in self.nodes
                 ],
                 "embeddings": self.embeddings,
             }
@@ -422,46 +512,31 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
                 encoding="utf-8",
             )
 
-    class FakeDoclingNodeParser:
-        def __init__(self) -> None:
-            calls["docling_parser_calls"] += 1
-
     class FakeVectorStoreIndex:
         def __init__(
             self,
-            documents: list[FakeDocument],
-            storage_context: FakeStorageContext,
             *,
+            nodes: list[FakeTextNode],
+            storage_context: FakeStorageContext,
             embed_model: Any,
             embeddings: list[list[float]] | None = None,
         ) -> None:
-            self.documents = documents
+            if embeddings is None:
+                calls["build_node_ids"] = [node.node_id for node in nodes]
+                calls["build_node_metadata"] = [node.metadata for node in nodes]
+                calls["build_embed_models"].append(embed_model)
+            self.nodes = nodes
             self.storage_context = storage_context
-            self.storage_context.documents = documents
+            self.storage_context.nodes = nodes
             self.embed_model = embed_model
             self.embeddings = embeddings or [
-                _embed(embed_model, document.text) for document in documents
+                _embed(embed_model, node.text) for node in nodes
             ]
             self.storage_context.embeddings = self.embeddings
 
-        @classmethod
-        def from_documents(
-            cls,
-            documents,
-            *,
-            storage_context,
-            transformations,
-            embed_model=None,
-        ):
-            assert transformations
-            assert isinstance(transformations[0], FakeDoclingNodeParser)
-            assert embed_model is not None
-            calls["build_embed_models"].append(embed_model)
-            return cls(list(documents), storage_context, embed_model=embed_model)
-
         def as_retriever(self, *, similarity_top_k: int):
             return FakeRetriever(
-                self.documents,
+                self.nodes,
                 self.embeddings,
                 self.embed_model,
                 similarity_top_k,
@@ -470,12 +545,12 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     class FakeRetriever:
         def __init__(
             self,
-            documents,
+            nodes,
             embeddings: list[list[float]],
             embed_model: Any,
             top_k: int,
         ) -> None:
-            self.documents = documents
+            self.nodes = nodes
             self.embeddings = embeddings
             self.embed_model = embed_model
             self.top_k = top_k
@@ -484,29 +559,29 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
             query_embedding = _embed(self.embed_model, text)
             if query_embedding and any(self.embeddings):
                 ranked_with_scores = sorted(
-                    zip(self.documents, self.embeddings, strict=True),
+                    zip(self.nodes, self.embeddings, strict=True),
                     key=lambda item: _dot(query_embedding, item[1]),
                     reverse=True,
                 )
                 return [
                     types.SimpleNamespace(
-                        node=document,
+                        node=node,
                         score=_dot(query_embedding, embedding),
                     )
-                    for document, embedding in ranked_with_scores[: self.top_k]
+                    for node, embedding in ranked_with_scores[: self.top_k]
                 ]
 
             ranked = sorted(
-                self.documents,
-                key=lambda document: text in document.text,
+                self.nodes,
+                key=lambda node: text in node.text,
                 reverse=True,
             )
             return [
                 types.SimpleNamespace(
-                    node=document,
-                    score=1.0 if text in document.text else 0.01,
+                    node=node,
+                    score=1.0 if text in node.text else 0.01,
                 )
-                for document in ranked[: self.top_k]
+                for node in ranked[: self.top_k]
             ]
 
     class FakeMockEmbedding:
@@ -516,9 +591,10 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     def fake_load_index_from_storage(storage_context, embed_model=None):
         assert embed_model is not None
         calls["load_embed_models"].append(embed_model)
+        calls["load_node_ids"] = [node.node_id for node in storage_context.nodes]
         return FakeVectorStoreIndex(
-            storage_context.documents,
-            storage_context,
+            nodes=storage_context.nodes,
+            storage_context=storage_context,
             embed_model=embed_model,
             embeddings=storage_context.embeddings,
         )
@@ -526,16 +602,13 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     llama_index_module = types.ModuleType("llama_index")
     llama_index_module.__path__ = []
     core_module = types.ModuleType("llama_index.core")
-    core_module.Document = FakeDocument
     core_module.StorageContext = FakeStorageContext
     core_module.VectorStoreIndex = FakeVectorStoreIndex
     core_module.load_index_from_storage = fake_load_index_from_storage
+    schema_module = types.ModuleType("llama_index.core.schema")
+    schema_module.TextNode = FakeTextNode
     vector_stores_module = types.ModuleType("llama_index.core.vector_stores")
     vector_stores_module.SimpleVectorStore = FakeSimpleVectorStore
-    node_parser_module = types.ModuleType("llama_index.node_parser")
-    node_parser_module.__path__ = []
-    docling_module = types.ModuleType("llama_index.node_parser.docling")
-    docling_module.DoclingNodeParser = FakeDoclingNodeParser
     embeddings_module = types.ModuleType("llama_index.core.embeddings")
     embeddings_module.__path__ = []
     mock_embedding_module = types.ModuleType(
@@ -545,16 +618,11 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
 
     monkeypatch.setitem(sys.modules, "llama_index", llama_index_module)
     monkeypatch.setitem(sys.modules, "llama_index.core", core_module)
+    monkeypatch.setitem(sys.modules, "llama_index.core.schema", schema_module)
     monkeypatch.setitem(
         sys.modules,
         "llama_index.core.vector_stores",
         vector_stores_module,
-    )
-    monkeypatch.setitem(sys.modules, "llama_index.node_parser", node_parser_module)
-    monkeypatch.setitem(
-        sys.modules,
-        "llama_index.node_parser.docling",
-        docling_module,
     )
     monkeypatch.setitem(sys.modules, "llama_index.core.embeddings", embeddings_module)
     monkeypatch.setitem(
