@@ -1,0 +1,23 @@
+{
+  "run_id": "failed-parse-ANN-SAMPLE-001",
+  "announcement_id": "ANN-SAMPLE-001",
+  "status": "failed",
+  "started_at": "2026-04-18T10:00:00Z",
+  "finished_at": "2026-04-18T10:01:00Z",
+  "document_artifact_path": "tests/fixtures/announcements/artifacts/documents/sse/ANN-SAMPLE-001/883f69019d62289b5c7d838cef13303b92eb3733b059efcc9fb07152cfff0264.pdf",
+  "parsed_artifact_path": null,
+  "candidate_count": 0,
+  "submit_success_count": 0,
+  "submit_duplicate_count": 0,
+  "submit_failure_count": 0,
+  "submit_receipts": [],
+  "candidate_traces": [],
+  "errors": [
+    {
+      "stage": "parse",
+      "message": "Docling failed on corrupt fixture",
+      "fact_id": null
+    }
+  ],
+  "trace_path": null
+}

@@ -1,0 +1,14 @@
+{
+  "announcement_id": "ANN-SAMPLE-001",
+  "ts_code": "600000.SH",
+  "title": "浦发银行2026年第一季度业绩预告",
+  "publish_time": "2026-04-18T09:01:00Z",
+  "content_hash": "883f69019d62289b5c7d838cef13303b92eb3733b059efcc9fb07152cfff0264",
+  "official_url": "https://static.sse.com.cn/disclosure/ANN-SAMPLE-001.pdf",
+  "source_exchange": "sse",
+  "attachment_type": "pdf",
+  "local_path": "tests/fixtures/announcements/artifacts/documents/sse/ANN-SAMPLE-001/883f69019d62289b5c7d838cef13303b92eb3733b059efcc9fb07152cfff0264.pdf",
+  "content_type": "application/pdf",
+  "byte_size": 80,
+  "fetched_at": "2026-04-18T09:30:00Z"
+}

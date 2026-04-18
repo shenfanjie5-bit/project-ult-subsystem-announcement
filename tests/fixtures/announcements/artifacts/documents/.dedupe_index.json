@@ -1,0 +1,8 @@
+{
+  "announcement_id": {
+    "ANN-SAMPLE-001": "documents/sse/ANN-SAMPLE-001/883f69019d62289b5c7d838cef13303b92eb3733b059efcc9fb07152cfff0264.metadata.json"
+  },
+  "content_hash": {
+    "883f69019d62289b5c7d838cef13303b92eb3733b059efcc9fb07152cfff0264": "documents/sse/ANN-SAMPLE-001/883f69019d62289b5c7d838cef13303b92eb3733b059efcc9fb07152cfff0264.metadata.json"
+  }
+}

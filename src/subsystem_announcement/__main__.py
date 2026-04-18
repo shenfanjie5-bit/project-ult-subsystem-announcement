@@ -135,6 +135,143 @@ if typer is not None:
             )
             raise typer.Exit(code=1)
         typer.echo(f"ok trace={run.trace_path}")
+
+    @app.command("replay")
+    def replay_command(
+        announcement_id: str = typer.Option(
+            ...,
+            "--announcement-id",
+            help="Cached announcement id to replay.",
+        ),
+        config: Path = typer.Option(
+            ...,
+            "--config",
+            "-c",
+            help="Announcement TOML config path.",
+        ),
+        rebuild_index: bool = typer.Option(
+            False,
+            "--rebuild-index",
+            help="Rebuild retrieval artifact after replay parse.",
+        ),
+    ) -> None:
+        """Replay one cached announcement without fetching its official URL."""
+
+        try:
+            configure_logging()
+            runtime_config = load_config(config)
+            from .runtime.replay import ReplayRequest, replay_announcement
+
+            result = asyncio.run(
+                replay_announcement(
+                    ReplayRequest(
+                        announcement_id=announcement_id,
+                        rebuild_index=rebuild_index,
+                    ),
+                    runtime_config,
+                )
+            )
+        except Exception as exc:
+            typer.echo(f"replay failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        if result.run.status != "succeeded":
+            typer.echo(
+                f"replay failed: status={result.run.status} "
+                f"trace={result.run.trace_path}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        typer.echo(f"ok trace={result.run.trace_path}")
+
+    @app.command("repair")
+    def repair_command(
+        trace: Path | None = typer.Option(
+            None,
+            "--trace",
+            help="Failed run trace JSON path.",
+        ),
+        document: Path | None = typer.Option(
+            None,
+            "--document",
+            help="Cached document path or metadata JSON path.",
+        ),
+        announcement_id: str | None = typer.Option(
+            None,
+            "--announcement-id",
+            help="Announcement id to resolve through the dedupe cache.",
+        ),
+        config: Path = typer.Option(
+            ...,
+            "--config",
+            "-c",
+            help="Announcement TOML config path.",
+        ),
+        reason: str = typer.Option(
+            "parse_failure",
+            "--reason",
+            help="Repair reason: parse_failure or docling_version_upgrade.",
+        ),
+        rebuild_index: bool = typer.Option(
+            True,
+            "--rebuild-index/--no-rebuild-index",
+            help="Rebuild retrieval artifact after reparsing.",
+        ),
+    ) -> None:
+        """Repair a parsed artifact from cached document bytes."""
+
+        try:
+            configure_logging()
+            runtime_config = load_config(config)
+            from .runtime.repair import (
+                RepairReason,
+                RepairRequest,
+                repair_parsed_artifact,
+            )
+
+            result = repair_parsed_artifact(
+                RepairRequest(
+                    announcement_id=announcement_id,
+                    trace_path=trace,
+                    document_path=document,
+                    reason=RepairReason(reason),
+                    rebuild_index=rebuild_index,
+                ),
+                runtime_config,
+            )
+        except Exception as exc:
+            typer.echo(f"repair failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        typer.echo(f"ok parsed={result.parsed_artifact_path}")
+
+    @app.command("metrics")
+    def metrics_command(
+        manifest: Path = typer.Option(
+            Path("tests/fixtures/announcements/manifest.json"),
+            "--manifest",
+            help="Announcement sample manifest path.",
+        ),
+        config: Path | None = typer.Option(
+            None,
+            "--config",
+            "-c",
+            help="Optional announcement TOML config path.",
+        ),
+    ) -> None:
+        """Compute fixture-backed stage-3 regression metrics."""
+
+        try:
+            runtime_config = load_config(config)
+            from .runtime.metrics import (
+                assert_metrics_within_thresholds,
+                compute_metrics_for_manifest,
+            )
+
+            report = compute_metrics_for_manifest(manifest, config=runtime_config)
+            assert_metrics_within_thresholds(report)
+        except Exception as exc:
+            typer.echo(f"metrics failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        typer.echo(report.model_dump_json(indent=2))
 else:
     app = None
 
@@ -215,9 +352,106 @@ def _fallback_main(argv: list[str]) -> int:
             return 1
         print(f"ok trace={run.trace_path}")
         return 0
+    if command == "replay":
+        announcement_id = _option_value(argv, "--announcement-id")
+        config_path = _option_path(argv, "--config") or _option_path(argv, "-c")
+        if announcement_id is None or config_path is None:
+            print(
+                "usage: python -m subsystem_announcement replay "
+                "--announcement-id ID --config PATH [--rebuild-index]",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            configure_logging()
+            runtime_config = load_config(config_path)
+            from .runtime.replay import ReplayRequest, replay_announcement
+
+            result = asyncio.run(
+                replay_announcement(
+                    ReplayRequest(
+                        announcement_id=announcement_id,
+                        rebuild_index="--rebuild-index" in argv,
+                    ),
+                    runtime_config,
+                )
+            )
+        except Exception as exc:
+            print(f"replay failed: {exc}", file=sys.stderr)
+            return 1
+        if result.run.status != "succeeded":
+            print(
+                f"replay failed: status={result.run.status} "
+                f"trace={result.run.trace_path}",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"ok trace={result.run.trace_path}")
+        return 0
+    if command == "repair":
+        config_path = _option_path(argv, "--config") or _option_path(argv, "-c")
+        trace_path = _option_path(argv, "--trace")
+        document_path = _option_path(argv, "--document")
+        announcement_id = _option_value(argv, "--announcement-id")
+        reason = _option_value(argv, "--reason") or "parse_failure"
+        if config_path is None or (
+            trace_path is None and document_path is None and announcement_id is None
+        ):
+            print(
+                "usage: python -m subsystem_announcement repair "
+                "(--trace PATH | --document PATH | --announcement-id ID) "
+                "--config PATH [--reason REASON] [--no-rebuild-index]",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            configure_logging()
+            runtime_config = load_config(config_path)
+            from .runtime.repair import (
+                RepairReason,
+                RepairRequest,
+                repair_parsed_artifact,
+            )
+
+            result = repair_parsed_artifact(
+                RepairRequest(
+                    announcement_id=announcement_id,
+                    trace_path=trace_path,
+                    document_path=document_path,
+                    reason=RepairReason(reason),
+                    rebuild_index="--no-rebuild-index" not in argv,
+                ),
+                runtime_config,
+            )
+        except Exception as exc:
+            print(f"repair failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"ok parsed={result.parsed_artifact_path}")
+        return 0
+    if command == "metrics":
+        manifest_path = (
+            _option_path(argv, "--manifest")
+            or Path("tests/fixtures/announcements/manifest.json")
+        )
+        config_path = _option_path(argv, "--config") or _option_path(argv, "-c")
+        try:
+            runtime_config = load_config(config_path)
+            from .runtime.metrics import (
+                assert_metrics_within_thresholds,
+                compute_metrics_for_manifest,
+            )
+
+            report = compute_metrics_for_manifest(manifest_path, config=runtime_config)
+            assert_metrics_within_thresholds(report)
+        except Exception as exc:
+            print(f"metrics failed: {exc}", file=sys.stderr)
+            return 1
+        print(report.model_dump_json(indent=2))
+        return 0
 
     print(
-        "usage: python -m subsystem_announcement [version|doctor|ping|run|process]",
+        "usage: python -m subsystem_announcement "
+        "[version|doctor|ping|run|process|replay|repair|metrics]",
         file=sys.stderr,
     )
     return 1
@@ -285,6 +519,15 @@ def _option_path(argv: list[str], option: str) -> Path | None:
     if index + 1 >= len(argv):
         return None
     return Path(argv[index + 1])
+
+
+def _option_value(argv: list[str], option: str) -> str | None:
+    if option not in argv:
+        return None
+    index = argv.index(option)
+    if index + 1 >= len(argv):
+        return None
+    return argv[index + 1]
 
 
 if __name__ == "__main__":

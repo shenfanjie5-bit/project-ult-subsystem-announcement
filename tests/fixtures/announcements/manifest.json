@@ -1,95 +1,316 @@
 {
   "samples": [
     {
-      "file": "sse-major-contract.pdf",
+      "sample_id": "ANN-SAMPLE-001",
+      "announcement_id": "ANN-SAMPLE-001",
+      "fact_types": [
+        "earnings_preannounce"
+      ],
+      "expected_min_ex1": 1,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "ts_code:600000.SH",
+      "source_exchange": "sse",
       "attachment_type": "pdf",
-      "expected_min_sections": 1,
-      "expected_min_tables": 1,
-      "expected_success": true
-    },
-    {
+      "fixture_paths": {
+        "document": "sse-earnings-preannounce.pdf",
+        "parsed_artifact": "parsed_stage3_samples.json"
+      },
+      "metrics": {
+        "parse_seconds": 0.05,
+        "discovery_to_ex1_seconds": 0.05,
+        "index_seconds": 0.05
+      },
       "file": "sse-earnings-preannounce.pdf",
-      "attachment_type": "pdf",
       "expected_min_sections": 1,
       "expected_min_tables": 0,
       "expected_success": true
     },
     {
+      "sample_id": "ANN-SAMPLE-002",
+      "announcement_id": "ANN-SAMPLE-002",
+      "fact_types": [
+        "major_contract"
+      ],
+      "expected_min_ex1": 1,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "ts_code:600010.SH",
+      "source_exchange": "sse",
+      "attachment_type": "pdf",
+      "fixture_paths": {
+        "document": "sse-major-contract.pdf",
+        "parsed_artifact": "parsed_stage3_samples.json"
+      },
+      "metrics": {
+        "parse_seconds": 0.05,
+        "discovery_to_ex1_seconds": 0.05,
+        "index_seconds": 0.05
+      },
+      "file": "sse-major-contract.pdf",
+      "expected_min_sections": 1,
+      "expected_min_tables": 1,
+      "expected_success": true
+    },
+    {
+      "sample_id": "ANN-SAMPLE-003",
+      "announcement_id": "ANN-SAMPLE-003",
+      "fact_types": [
+        "shareholder_change"
+      ],
+      "expected_min_ex1": 1,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "ts_code:000001.SZ",
+      "source_exchange": "szse",
+      "attachment_type": "pdf",
+      "fixture_paths": {
+        "document": "szse-shareholder-change.pdf",
+        "parsed_artifact": "parsed_stage3_samples.json"
+      },
+      "metrics": {
+        "parse_seconds": 0.05,
+        "discovery_to_ex1_seconds": 0.05,
+        "index_seconds": 0.05
+      },
       "file": "szse-shareholder-change.pdf",
-      "attachment_type": "pdf",
       "expected_min_sections": 1,
       "expected_min_tables": 1,
       "expected_success": true
     },
     {
+      "sample_id": "ANN-SAMPLE-004",
+      "announcement_id": "ANN-SAMPLE-004",
+      "fact_types": [
+        "equity_pledge"
+      ],
+      "expected_min_ex1": 1,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "ts_code:300001.SZ",
+      "source_exchange": "cninfo",
+      "attachment_type": "html",
+      "fixture_paths": {
+        "document": "cninfo-equity-pledge.html",
+        "parsed_artifact": "parsed_stage3_samples.json"
+      },
+      "metrics": {
+        "parse_seconds": 0.05,
+        "discovery_to_ex1_seconds": 0.05,
+        "index_seconds": 0.05
+      },
       "file": "cninfo-equity-pledge.html",
-      "attachment_type": "html",
       "expected_min_sections": 1,
       "expected_min_tables": 1,
       "expected_success": true
     },
     {
+      "sample_id": "ANN-SAMPLE-005",
+      "announcement_id": "ANN-SAMPLE-005",
+      "fact_types": [
+        "trading_halt_resume"
+      ],
+      "expected_min_ex1": 1,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "ts_code:002001.SZ",
+      "source_exchange": "cninfo",
+      "attachment_type": "html",
+      "fixture_paths": {
+        "document": "cninfo-trading-resume.html",
+        "parsed_artifact": "parsed_stage3_samples.json"
+      },
+      "metrics": {
+        "parse_seconds": 0.05,
+        "discovery_to_ex1_seconds": 0.05,
+        "index_seconds": 0.05
+      },
       "file": "cninfo-trading-resume.html",
-      "attachment_type": "html",
       "expected_min_sections": 1,
       "expected_min_tables": 0,
       "expected_success": true
     },
     {
+      "sample_id": "ANN-SAMPLE-006",
+      "announcement_id": "ANN-SAMPLE-006",
+      "fact_types": [
+        "regulatory_action"
+      ],
+      "expected_min_ex1": 1,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "ts_code:430001.BJ",
+      "source_exchange": "bse",
+      "attachment_type": "html",
+      "fixture_paths": {
+        "document": "bse-regulatory-action.html",
+        "parsed_artifact": "parsed_stage3_samples.json"
+      },
+      "metrics": {
+        "parse_seconds": 0.05,
+        "discovery_to_ex1_seconds": 0.05,
+        "index_seconds": 0.05
+      },
       "file": "bse-regulatory-action.html",
-      "attachment_type": "html",
       "expected_min_sections": 1,
       "expected_min_tables": 0,
       "expected_success": true
     },
     {
+      "sample_id": "ANN-SAMPLE-007",
+      "announcement_id": "ANN-SAMPLE-007",
+      "fact_types": [
+        "fundraising_change"
+      ],
+      "expected_min_ex1": 1,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "ts_code:830001.BJ",
+      "source_exchange": "neeq",
+      "attachment_type": "word",
+      "fixture_paths": {
+        "document": "neeq-fundraising-change.docx",
+        "parsed_artifact": "parsed_stage3_samples.json"
+      },
+      "metrics": {
+        "parse_seconds": 0.05,
+        "discovery_to_ex1_seconds": 0.05,
+        "index_seconds": 0.05
+      },
       "file": "neeq-fundraising-change.docx",
-      "attachment_type": "word",
       "expected_min_sections": 1,
       "expected_min_tables": 1,
       "expected_success": true
     },
     {
-      "file": "sse-cooperation.docx",
+      "sample_id": "ANN-SAMPLE-008",
+      "announcement_id": "ANN-SAMPLE-008",
+      "fact_types": [
+        "shareholder_change"
+      ],
+      "expected_min_ex1": 1,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "ts_code:000002.SZ",
+      "source_exchange": "szse",
       "attachment_type": "word",
-      "expected_min_sections": 1,
-      "expected_min_tables": 0,
-      "expected_success": true
-    },
-    {
+      "fixture_paths": {
+        "document": "szse-controller-change.docx",
+        "parsed_artifact": "parsed_stage3_samples.json"
+      },
+      "metrics": {
+        "parse_seconds": 0.05,
+        "discovery_to_ex1_seconds": 0.05,
+        "index_seconds": 0.05
+      },
       "file": "szse-controller-change.docx",
-      "attachment_type": "word",
       "expected_min_sections": 1,
       "expected_min_tables": 1,
       "expected_success": true
     },
     {
-      "file": "corrupt-empty.pdf",
-      "attachment_type": "pdf",
-      "expected_min_sections": 0,
-      "expected_min_tables": 0,
-      "expected_success": false
-    },
-    {
-      "file": "corrupt-empty.html",
+      "sample_id": "ANN-SAMPLE-009",
+      "announcement_id": "ANN-SAMPLE-009",
+      "fact_types": [],
+      "expected_min_ex1": 0,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "ts_code:600011.SH",
+      "source_exchange": "sse",
       "attachment_type": "html",
-      "expected_min_sections": 0,
-      "expected_min_tables": 0,
-      "expected_success": false
-    },
-    {
-      "file": "corrupt-empty.docx",
-      "attachment_type": "word",
-      "expected_min_sections": 0,
-      "expected_min_tables": 0,
-      "expected_success": false
-    },
-    {
+      "fixture_paths": {
+        "document": "ambiguous-relation.html",
+        "parsed_artifact": "parsed_stage3_samples.json"
+      },
+      "metrics": {
+        "parse_seconds": 0.05,
+        "discovery_to_ex1_seconds": 0.05,
+        "index_seconds": 0.05
+      },
       "file": "ambiguous-relation.html",
-      "attachment_type": "html",
       "expected_min_sections": 1,
       "expected_min_tables": 0,
       "expected_success": true
+    },
+    {
+      "sample_id": "ANN-SAMPLE-010",
+      "announcement_id": "ANN-SAMPLE-010",
+      "fact_types": [],
+      "expected_min_ex1": 0,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "ts_code:600012.SH",
+      "source_exchange": "sse",
+      "attachment_type": "word",
+      "fixture_paths": {
+        "document": "sse-cooperation.docx",
+        "parsed_artifact": "parsed_stage3_samples.json"
+      },
+      "metrics": {
+        "parse_seconds": 0.05,
+        "discovery_to_ex1_seconds": 0.05,
+        "index_seconds": 0.05
+      },
+      "file": "sse-cooperation.docx",
+      "expected_min_sections": 1,
+      "expected_min_tables": 0,
+      "expected_success": true
+    },
+    {
+      "sample_id": "ANN-SAMPLE-011",
+      "announcement_id": "ANN-SAMPLE-011",
+      "fact_types": [],
+      "expected_min_ex1": 0,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "",
+      "source_exchange": "sse",
+      "attachment_type": "pdf",
+      "fixture_paths": {
+        "document": "corrupt-empty.pdf"
+      },
+      "metrics": {
+        "parse_seconds": 0.0,
+        "discovery_to_ex1_seconds": 0.0,
+        "index_seconds": 0.0
+      },
+      "file": "corrupt-empty.pdf",
+      "expected_min_sections": 0,
+      "expected_min_tables": 0,
+      "expected_success": false
+    },
+    {
+      "sample_id": "ANN-SAMPLE-012",
+      "announcement_id": "ANN-SAMPLE-012",
+      "fact_types": [],
+      "expected_min_ex1": 0,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "",
+      "source_exchange": "cninfo",
+      "attachment_type": "html",
+      "fixture_paths": {
+        "document": "corrupt-empty.html"
+      },
+      "metrics": {
+        "parse_seconds": 0.0,
+        "discovery_to_ex1_seconds": 0.0,
+        "index_seconds": 0.0
+      },
+      "file": "corrupt-empty.html",
+      "expected_min_sections": 0,
+      "expected_min_tables": 0,
+      "expected_success": false
+    },
+    {
+      "sample_id": "ANN-SAMPLE-013",
+      "announcement_id": "ANN-SAMPLE-013",
+      "fact_types": [],
+      "expected_min_ex1": 0,
+      "expected_max_ex3": 0,
+      "expected_primary_entity_id": "",
+      "source_exchange": "neeq",
+      "attachment_type": "word",
+      "fixture_paths": {
+        "document": "corrupt-empty.docx"
+      },
+      "metrics": {
+        "parse_seconds": 0.0,
+        "discovery_to_ex1_seconds": 0.0,
+        "index_seconds": 0.0
+      },
+      "file": "corrupt-empty.docx",
+      "expected_min_sections": 0,
+      "expected_min_tables": 0,
+      "expected_success": false
     }
   ]
 }
