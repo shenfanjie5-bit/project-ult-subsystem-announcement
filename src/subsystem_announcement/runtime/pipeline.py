@@ -26,6 +26,11 @@ from subsystem_announcement.extract import (
     StructuredReasoner,
     extract_fact_candidates,
 )
+from subsystem_announcement.graph import (
+    AnnouncementGraphDeltaCandidate,
+    GraphFunc,
+    derive_graph_delta_candidates,
+)
 from subsystem_announcement.parse import ParsedAnnouncementArtifact, parse_announcement
 from subsystem_announcement.parse.artifact import write_parsed_artifact
 from subsystem_announcement.signals import (
@@ -59,7 +64,7 @@ ExtractFunc = Callable[
 
 
 class AnnouncementPipeline:
-    """Process one announcement envelope through Ex-1/Ex-2 submission."""
+    """Process one announcement envelope through Ex candidate submission."""
 
     def __init__(
         self,
@@ -70,6 +75,7 @@ class AnnouncementPipeline:
         parse_func: ParseFunc = parse_announcement,
         extract_func: ExtractFunc = extract_fact_candidates,
         signal_func: SignalFunc = derive_signal_candidates,
+        graph_func: GraphFunc = derive_graph_delta_candidates,
         idempotency_store: SubmitIdempotencyStore | None = None,
         trace_store: TraceStore | None = None,
     ) -> None:
@@ -79,6 +85,7 @@ class AnnouncementPipeline:
         self._parse_func = parse_func
         self._extract_func = extract_func
         self._signal_func = signal_func
+        self._graph_func = graph_func
         self._entity_registry = _build_entity_registry(config)
         self._reasoner = _build_reasoner(config)
         self._idempotency_store = idempotency_store or SubmitIdempotencyStore(
@@ -90,7 +97,7 @@ class AnnouncementPipeline:
         self,
         envelope: AnnouncementEnvelope,
     ) -> AnnouncementExtractionRun:
-        """Run discovery, parse, Ex-1 extraction, Ex-2 signals, submit, and trace."""
+        """Run discovery, parse, Ex extraction, submit, and trace."""
 
         run = AnnouncementExtractionRun(
             run_id=str(uuid4()),
@@ -109,7 +116,8 @@ class AnnouncementPipeline:
 
             facts = list(await self._call_extract(parsed_artifact))
             signals = list(await self._call_signals(facts))
-            candidates: list[CandidatePayload] = [*facts, *signals]
+            graph_deltas = list(await self._call_graph(facts))
+            candidates: list[CandidatePayload] = [*facts, *signals, *graph_deltas]
             run.candidate_count = len(candidates)
 
             if candidates:
@@ -165,6 +173,12 @@ class AnnouncementPipeline:
         facts: Sequence[AnnouncementFactCandidate],
     ) -> Sequence[AnnouncementSignalCandidate]:
         return await _maybe_await(self._signal_func(facts))
+
+    async def _call_graph(
+        self,
+        facts: Sequence[AnnouncementFactCandidate],
+    ) -> Sequence[AnnouncementGraphDeltaCandidate]:
+        return await _maybe_await(self._graph_func(facts))
 
     def _get_subsystem(self) -> AnnouncementSubsystem:
         if self._subsystem is None:
