@@ -45,7 +45,7 @@ def test_build_vector_index_persists_simple_vector_store(
     assert ref.embedding_strategy.model_dimension == 384
     assert ref.chunk_ids == [chunk.chunk_id for chunk in chunks]
     assert (tmp_path / "vector-store" / "fake_vector_index.json").exists()
-    assert installed["docling_parser_calls"] == 1
+    assert installed["build_embed_models"]
 
 
 def test_query_returns_section_and_table_keyword_hits(
@@ -329,6 +329,9 @@ def test_build_vector_index_reports_missing_llama_index_dependency(
         "version",
         lambda package_name: "0.10.0",
     )
+    for module_name in list(sys.modules):
+        if module_name == "llama_index" or module_name.startswith("llama_index."):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
     monkeypatch.setitem(sys.modules, "llama_index", None)
 
     with pytest.raises(RuntimeError, match="LlamaIndex core"):
@@ -367,7 +370,6 @@ def _chunk(chunk_id: str, section_id: str, text: str) -> AnnouncementChunk:
 
 def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     calls: dict[str, Any] = {
-        "docling_parser_calls": 0,
         "build_embed_models": [],
         "load_embed_models": [],
     }
@@ -422,10 +424,6 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
                 encoding="utf-8",
             )
 
-    class FakeDoclingNodeParser:
-        def __init__(self) -> None:
-            calls["docling_parser_calls"] += 1
-
     class FakeVectorStoreIndex:
         def __init__(
             self,
@@ -450,11 +448,10 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
             documents,
             *,
             storage_context,
-            transformations,
+            transformations=None,
             embed_model=None,
         ):
-            assert transformations
-            assert isinstance(transformations[0], FakeDoclingNodeParser)
+            assert transformations is None
             assert embed_model is not None
             calls["build_embed_models"].append(embed_model)
             return cls(list(documents), storage_context, embed_model=embed_model)
@@ -532,10 +529,6 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     core_module.load_index_from_storage = fake_load_index_from_storage
     vector_stores_module = types.ModuleType("llama_index.core.vector_stores")
     vector_stores_module.SimpleVectorStore = FakeSimpleVectorStore
-    node_parser_module = types.ModuleType("llama_index.node_parser")
-    node_parser_module.__path__ = []
-    docling_module = types.ModuleType("llama_index.node_parser.docling")
-    docling_module.DoclingNodeParser = FakeDoclingNodeParser
     embeddings_module = types.ModuleType("llama_index.core.embeddings")
     embeddings_module.__path__ = []
     mock_embedding_module = types.ModuleType(
@@ -550,12 +543,7 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
         "llama_index.core.vector_stores",
         vector_stores_module,
     )
-    monkeypatch.setitem(sys.modules, "llama_index.node_parser", node_parser_module)
-    monkeypatch.setitem(
-        sys.modules,
-        "llama_index.node_parser.docling",
-        docling_module,
-    )
+    monkeypatch.setitem(sys.modules, "llama_index.node_parser.docling", None)
     monkeypatch.setitem(sys.modules, "llama_index.core.embeddings", embeddings_module)
     monkeypatch.setitem(
         sys.modules,

@@ -78,6 +78,9 @@ def test_docling_dependency_is_exactly_pinned() -> None:
 
     assert docling_dependencies == ["docling==2.15.1"]
     assert not any(dependency.startswith("docling>=") for dependency in dependencies)
+    assert "llama-index-node-parser-docling" not in {
+        dependency.split("==", 1)[0].split(">=", 1)[0] for dependency in dependencies
+    }
 
 
 def test_parsed_artifact_round_trips_to_disk(tmp_path: Path) -> None:

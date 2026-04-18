@@ -46,7 +46,6 @@ class _LlamaIndexApi:
     StorageContext: Any
     VectorStoreIndex: Any
     SimpleVectorStore: Any
-    DoclingNodeParser: Any
     load_index_from_storage: Any
 
 
@@ -68,13 +67,11 @@ def build_vector_index(
     documents = [_document_from_chunk(api.Document, chunk) for chunk in chunks]
     vector_store = api.SimpleVectorStore()
     storage_context = api.StorageContext.from_defaults(vector_store=vector_store)
-    node_parser = api.DoclingNodeParser()
 
     index = _index_from_documents(
         api,
         documents,
         storage_context=storage_context,
-        node_parser=node_parser,
         embed_model=embedding,
     )
 
@@ -156,8 +153,8 @@ def resolve_llama_index_version(version_pin: str) -> str:
     except metadata.PackageNotFoundError as exc:
         raise RuntimeError(
             "LlamaIndex dependency is not installed for the configured exact "
-            f"pin {configured!r}. Install the locked LlamaIndex and "
-            "DoclingNodeParser dependencies before building retrieval indexes."
+            f"pin {configured!r}. Install the locked LlamaIndex core "
+            "dependency before building retrieval indexes."
         ) from exc
     if installed_version != expected_version:
         raise RuntimeError(
@@ -187,14 +184,12 @@ def _index_from_documents(
     documents: Sequence[Any],
     *,
     storage_context: Any,
-    node_parser: Any,
     embed_model: Any,
 ) -> Any:
     try:
         return api.VectorStoreIndex.from_documents(
             documents,
             storage_context=storage_context,
-            transformations=[node_parser],
             embed_model=embed_model,
         )
     except TypeError:
@@ -203,7 +198,6 @@ def _index_from_documents(
             return api.VectorStoreIndex.from_documents(
                 documents,
                 storage_context=storage_context,
-                transformations=[node_parser],
             )
         previous_embed_model = getattr(settings, "embed_model", None)
         settings.embed_model = embed_model
@@ -211,7 +205,6 @@ def _index_from_documents(
             return api.VectorStoreIndex.from_documents(
                 documents,
                 storage_context=storage_context,
-                transformations=[node_parser],
             )
         finally:
             settings.embed_model = previous_embed_model
@@ -246,27 +239,11 @@ def _load_llama_index_api() -> _LlamaIndexApi:
                 "retrieval indexes. Install the exact llama-index-core pin."
             ) from exc
 
-    try:
-        from llama_index.node_parser.docling import (  # type: ignore[import-not-found]
-            DoclingNodeParser,
-        )
-    except (ImportError, ModuleNotFoundError):
-        try:
-            from llama_index.node_parser.docling.base import (  # type: ignore[import-not-found]
-                DoclingNodeParser,
-            )
-        except (ImportError, ModuleNotFoundError) as exc:
-            raise RuntimeError(
-                "LlamaIndex DoclingNodeParser is required for announcement "
-                "retrieval indexes. Install the exact "
-                "llama-index-node-parser-docling pin."
-            ) from exc
     return _LlamaIndexApi(
         Document=Document,
         StorageContext=StorageContext,
         VectorStoreIndex=VectorStoreIndex,
         SimpleVectorStore=SimpleVectorStore,
-        DoclingNodeParser=DoclingNodeParser,
         load_index_from_storage=load_index_from_storage,
     )
 
