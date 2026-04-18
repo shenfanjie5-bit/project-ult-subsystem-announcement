@@ -9,6 +9,9 @@ from subsystem_announcement.discovery.document import AnnouncementDocumentArtifa
 from subsystem_announcement.extract import extract_fact_candidates
 from subsystem_announcement.graph import derive_graph_delta_candidates
 from subsystem_announcement.index import AnnouncementRetrievalArtifact
+from subsystem_announcement.index.retrieval_artifact import (
+    AnnouncementEmbeddingStrategy,
+)
 from subsystem_announcement.parse.artifact import ParsedAnnouncementArtifact
 from subsystem_announcement.runtime.metrics import (
     MetricThresholds,
@@ -297,7 +300,19 @@ def _fixture_build_retrieval(
         index_ref=str((output_root or Path(config.artifact_root)) / "vector_store"),
         parser_version=parsed_artifact.parser_version,
         llama_index_version=config.llama_index_version,
+        embedding_strategy=_embedding_strategy(),
         chunk_count=1,
         built_at=parsed_artifact.parsed_at,
         source_parsed_artifact_path=parsed_artifact_path,
+    )
+
+
+def _embedding_strategy() -> AnnouncementEmbeddingStrategy:
+    return AnnouncementEmbeddingStrategy(
+        strategy_type="adapter",
+        adapter_ref="tests.fixtures:embedding",
+        model_ref="tests.fixtures.Embedding",
+        model_version="fixture-v1",
+        model_dimension=2,
+        model_fingerprint="fixture-fingerprint",
     )

@@ -42,6 +42,30 @@ class AnnouncementChunk(BaseModel):
         return self
 
 
+class AnnouncementEmbeddingStrategy(BaseModel):
+    """Embedding identity used to build and query a persisted vector index."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    strategy_type: Literal["adapter", "injected", "test_mock"]
+    adapter_ref: str | None = None
+    model_ref: str = Field(min_length=1)
+    model_version: str | None = None
+    model_dimension: int | None = Field(default=None, ge=1)
+    model_fingerprint: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_strategy(self) -> "AnnouncementEmbeddingStrategy":
+        """Keep adapter-built indexes tied to the configured adapter ref."""
+
+        if self.strategy_type == "adapter":
+            if not self.adapter_ref:
+                raise ValueError("adapter embedding strategy requires adapter_ref")
+        elif self.adapter_ref is not None:
+            raise ValueError("adapter_ref is only valid for adapter strategy")
+        return self
+
+
 class AnnouncementRetrievalArtifact(BaseModel):
     """Local retrieval index reference for one parsed announcement."""
 
@@ -52,6 +76,7 @@ class AnnouncementRetrievalArtifact(BaseModel):
     index_ref: str = Field(min_length=1)
     parser_version: str = Field(min_length=1)
     llama_index_version: str = Field(min_length=1)
+    embedding_strategy: AnnouncementEmbeddingStrategy
     chunk_count: int = Field(ge=1)
     built_at: datetime
     source_parsed_artifact_path: Path | None = None
@@ -140,6 +165,7 @@ def build_retrieval_artifact(
         index_ref=vector_ref.index_ref,
         parser_version=parsed_artifact.parser_version,
         llama_index_version=vector_ref.llama_index_version,
+        embedding_strategy=vector_ref.embedding_strategy,
         chunk_count=len(chunks),
         built_at=vector_ref.built_at,
         source_parsed_artifact_path=parsed_artifact_path,

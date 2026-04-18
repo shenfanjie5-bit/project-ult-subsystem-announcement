@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from subsystem_announcement.config import AnnouncementConfig
 
-from .retrieval_artifact import AnnouncementChunk
+from .retrieval_artifact import AnnouncementChunk, AnnouncementEmbeddingStrategy
 
 
 class AnnouncementVectorIndexRef(BaseModel):
@@ -24,6 +26,7 @@ class AnnouncementVectorIndexRef(BaseModel):
 
     index_ref: str = Field(min_length=1)
     llama_index_version: str = Field(min_length=1)
+    embedding_strategy: AnnouncementEmbeddingStrategy
     chunk_ids: list[str] = Field(default_factory=list)
     built_at: datetime
 
@@ -82,6 +85,11 @@ def build_vector_index(
     return AnnouncementVectorIndexRef(
         index_ref=str(output_dir),
         llama_index_version=llama_index_version,
+        embedding_strategy=_embedding_strategy_from_model(
+            config=config,
+            embed_model=embed_model,
+            embedding=embedding,
+        ),
         chunk_ids=[chunk.chunk_id for chunk in chunks],
         built_at=datetime.now(timezone.utc),
     )
@@ -93,12 +101,22 @@ def load_vector_index(
     llama_index_version: str,
     config: AnnouncementConfig | None = None,
     embed_model: Any | None = None,
+    embedding_strategy: AnnouncementEmbeddingStrategy | None = None,
 ) -> Any:
     """Load a persisted LlamaIndex vector index for retrieval."""
 
     resolve_llama_index_version(llama_index_version)
     api = _load_llama_index_api()
     embedding = _resolve_embed_model(config=config, embed_model=embed_model)
+    if embedding_strategy is not None:
+        _validate_embedding_strategy(
+            expected=embedding_strategy,
+            actual=_embedding_strategy_from_model(
+                config=config,
+                embed_model=embed_model,
+                embedding=embedding,
+            ),
+        )
     storage_context = api.StorageContext.from_defaults(persist_dir=str(persist_dir))
     try:
         return api.load_index_from_storage(
@@ -337,6 +355,145 @@ def _mock_embed_model() -> Any:
                 "builds when no embed_model is explicitly provided."
             ) from exc
     return MockEmbedding(embed_dim=384)
+
+
+def _embedding_strategy_from_model(
+    *,
+    config: AnnouncementConfig | None,
+    embed_model: Any | None,
+    embedding: Any,
+) -> AnnouncementEmbeddingStrategy:
+    strategy_type = _embedding_strategy_type(config=config, embed_model=embed_model)
+    adapter_ref = (
+        config.retrieval_embedding_adapter
+        if strategy_type == "adapter" and config is not None
+        else None
+    )
+    model_ref = _model_ref(embedding)
+    model_version = _string_identity_attr(
+        embedding,
+        ("model_version", "version", "revision", "__version__"),
+    )
+    model_dimension = _int_identity_attr(
+        embedding,
+        ("embed_dim", "embedding_dim", "dimensions", "dimension"),
+    )
+    identity_payload = {
+        "strategy_type": strategy_type,
+        "adapter_ref": adapter_ref,
+        "model_ref": model_ref,
+        "model_version": model_version,
+        "model_dimension": model_dimension,
+        "identity_attributes": _embedding_identity_attrs(embedding),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            identity_payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return AnnouncementEmbeddingStrategy(
+        strategy_type=strategy_type,
+        adapter_ref=adapter_ref,
+        model_ref=model_ref,
+        model_version=model_version,
+        model_dimension=model_dimension,
+        model_fingerprint=fingerprint,
+    )
+
+
+def _embedding_strategy_type(
+    *,
+    config: AnnouncementConfig | None,
+    embed_model: Any | None,
+) -> str:
+    if embed_model is not None:
+        return "injected"
+    if config is not None and config.retrieval_embedding_adapter is not None:
+        return "adapter"
+    return "test_mock"
+
+
+def _validate_embedding_strategy(
+    *,
+    expected: AnnouncementEmbeddingStrategy,
+    actual: AnnouncementEmbeddingStrategy,
+) -> None:
+    if expected == actual:
+        return
+    raise RuntimeError(
+        "Retrieval embedding strategy mismatch: index was built with "
+        f"{_describe_embedding_strategy(expected)}, but query is configured with "
+        f"{_describe_embedding_strategy(actual)}. Rebuild the retrieval artifact "
+        "or query it with the same embedding adapter/model."
+    )
+
+
+def _describe_embedding_strategy(strategy: AnnouncementEmbeddingStrategy) -> str:
+    adapter = f" adapter={strategy.adapter_ref!r}" if strategy.adapter_ref else ""
+    version = f" version={strategy.model_version!r}" if strategy.model_version else ""
+    dimension = (
+        f" dimension={strategy.model_dimension}"
+        if strategy.model_dimension is not None
+        else ""
+    )
+    return (
+        f"type={strategy.strategy_type!r}{adapter} model={strategy.model_ref!r}"
+        f"{version}{dimension} fingerprint={strategy.model_fingerprint[:12]}"
+    )
+
+
+def _model_ref(value: Any) -> str:
+    model_type = type(value)
+    return f"{model_type.__module__}.{model_type.__qualname__}"
+
+
+def _embedding_identity_attrs(value: Any) -> dict[str, str | int | float | bool | None]:
+    attrs: dict[str, str | int | float | bool | None] = {}
+    for name in (
+        "model_name",
+        "model",
+        "model_id",
+        "model_version",
+        "version",
+        "revision",
+        "__version__",
+        "embed_dim",
+        "embedding_dim",
+        "dimensions",
+        "dimension",
+    ):
+        attr_value = _safe_getattr(value, name)
+        if isinstance(attr_value, str | int | float | bool) or attr_value is None:
+            attrs[name] = attr_value
+    return attrs
+
+
+def _string_identity_attr(value: Any, names: tuple[str, ...]) -> str | None:
+    for name in names:
+        attr_value = _safe_getattr(value, name)
+        if isinstance(attr_value, str) and attr_value.strip():
+            return attr_value.strip()
+    return None
+
+
+def _int_identity_attr(value: Any, names: tuple[str, ...]) -> int | None:
+    for name in names:
+        attr_value = _safe_getattr(value, name)
+        if isinstance(attr_value, bool):
+            continue
+        if isinstance(attr_value, int) and attr_value > 0:
+            return attr_value
+    return None
+
+
+def _safe_getattr(value: Any, name: str) -> Any:
+    try:
+        return getattr(value, name)
+    except Exception:
+        return None
 
 
 def _try_load_settings() -> Any | None:

@@ -13,6 +13,7 @@ from subsystem_announcement.config import AnnouncementConfig
 from subsystem_announcement.index import chunk_parsed_artifact
 from subsystem_announcement.index.retrieval_artifact import (
     AnnouncementChunk,
+    AnnouncementEmbeddingStrategy,
     AnnouncementRetrievalArtifact,
 )
 from subsystem_announcement.index.sample_query import query
@@ -40,6 +41,8 @@ def test_build_vector_index_persists_simple_vector_store(
 
     assert ref.index_ref == str(tmp_path / "vector-store")
     assert ref.llama_index_version == "llama-index-core==0.10.0"
+    assert ref.embedding_strategy.strategy_type == "test_mock"
+    assert ref.embedding_strategy.model_dimension == 384
     assert ref.chunk_ids == [chunk.chunk_id for chunk in chunks]
     assert (tmp_path / "vector-store" / "fake_vector_index.json").exists()
     assert installed["docling_parser_calls"] == 1
@@ -66,6 +69,7 @@ def test_query_returns_section_and_table_keyword_hits(
         index_ref=index_ref.index_ref,
         parser_version="docling==2.15.1",
         llama_index_version=index_ref.llama_index_version,
+        embedding_strategy=index_ref.embedding_strategy,
         chunk_count=len(chunks),
         built_at=index_ref.built_at,
         source_parsed_artifact_path=None,
@@ -121,6 +125,42 @@ def test_build_vector_index_uses_configured_embedding_adapter(
     assert installed["build_embed_models"] == [embedding]
 
 
+def test_build_vector_index_records_configured_embedding_strategy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_llama_index(monkeypatch)
+    chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
+    embedding = FakeSemanticEmbedding()
+    embedding.model_version = "semantic-fixture-v1"
+    adapter_module = types.ModuleType("versioned_embedding_adapter")
+    adapter_module.build_embedding = lambda: embedding
+    monkeypatch.setitem(sys.modules, "versioned_embedding_adapter", adapter_module)
+    config = AnnouncementConfig(
+        llama_index_version="llama-index-core==0.10.0",
+        retrieval_embedding_adapter="versioned_embedding_adapter:build_embedding",
+    )
+
+    ref = build_vector_index(
+        chunks,
+        persist_dir=tmp_path / "vector-store",
+        config=config,
+    )
+
+    assert ref.embedding_strategy == AnnouncementEmbeddingStrategy(
+        strategy_type="adapter",
+        adapter_ref="versioned_embedding_adapter:build_embedding",
+        model_ref=(
+            f"{FakeSemanticEmbedding.__module__}."
+            f"{FakeSemanticEmbedding.__qualname__}"
+        ),
+        model_version="semantic-fixture-v1",
+        model_dimension=None,
+        model_fingerprint=ref.embedding_strategy.model_fingerprint,
+    )
+    assert len(ref.embedding_strategy.model_fingerprint) == 64
+
+
 def test_query_uses_semantic_vectors_without_exact_word_overlap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -137,7 +177,8 @@ def test_query_uses_semantic_vectors_without_exact_word_overlap(
         _chunk(
             "chunk:ann-semantic:sec-0002:section:inquiry",
             "sec-0002",
-            "公司收到上海证券交易所监管问询函，将按要求及时回复。",
+            "公司收到上海证券交易所监管问询函，"
+            "将按要求及时回复。",
         ),
     ]
     index_ref = build_vector_index(
@@ -152,6 +193,7 @@ def test_query_uses_semantic_vectors_without_exact_word_overlap(
         index_ref=index_ref.index_ref,
         parser_version="docling==2.15.1",
         llama_index_version=index_ref.llama_index_version,
+        embedding_strategy=index_ref.embedding_strategy,
         chunk_count=len(chunks),
         built_at=index_ref.built_at,
         source_parsed_artifact_path=None,
@@ -167,6 +209,97 @@ def test_query_uses_semantic_vectors_without_exact_word_overlap(
     assert "交易所关注函" not in chunks[1].text
     hits = query("交易所关注函", artifact, top_k=1, embed_model=embedding)
     assert hits[0].chunk_id == chunks[1].chunk_id
+
+
+def test_query_semantic_hit_beats_lexical_only_distractor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_llama_index(monkeypatch)
+    embedding = FakeSemanticEmbedding()
+    config = AnnouncementConfig(llama_index_version="llama-index-core==0.10.0")
+    chunks = [
+        _chunk(
+            "chunk:ann-semantic:sec-0001:section:lexical-distractor",
+            "sec-0001",
+            "术语说明：交易所关注函一词出现在历史背景介绍中。",
+        ),
+        _chunk(
+            "chunk:ann-semantic:sec-0002:section:semantic-match",
+            "sec-0002",
+            "公司收到上海证券交易所监管问询函，"
+            "将按要求及时回复。",
+        ),
+    ]
+    index_ref = build_vector_index(
+        chunks,
+        persist_dir=tmp_path / "vector-store",
+        config=config,
+        embed_model=embedding,
+    )
+    artifact = AnnouncementRetrievalArtifact(
+        announcement_id="ann-semantic",
+        chunk_refs=[chunk.chunk_id for chunk in chunks],
+        index_ref=index_ref.index_ref,
+        parser_version="docling==2.15.1",
+        llama_index_version=index_ref.llama_index_version,
+        embedding_strategy=index_ref.embedding_strategy,
+        chunk_count=len(chunks),
+        built_at=index_ref.built_at,
+        source_parsed_artifact_path=None,
+        chunks=chunks,
+    )
+
+    hits = query("交易所关注函", artifact, top_k=1, embed_model=embedding)
+
+    assert hits[0].chunk_id == chunks[1].chunk_id
+    assert "交易所关注函" not in chunks[1].text
+
+
+def test_query_rejects_embedding_strategy_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_llama_index(monkeypatch)
+    embedding = FakeSemanticEmbedding()
+    config = AnnouncementConfig(llama_index_version="llama-index-core==0.10.0")
+    chunks = [
+        _chunk(
+            "chunk:ann-semantic:sec-0001:section:inquiry",
+            "sec-0001",
+            "公司收到上海证券交易所监管问询函，"
+            "将按要求及时回复。",
+        )
+    ]
+    index_ref = build_vector_index(
+        chunks,
+        persist_dir=tmp_path / "vector-store",
+        config=config,
+        embed_model=embedding,
+    )
+    artifact = AnnouncementRetrievalArtifact(
+        announcement_id="ann-semantic",
+        chunk_refs=[chunk.chunk_id for chunk in chunks],
+        index_ref=index_ref.index_ref,
+        parser_version="docling==2.15.1",
+        llama_index_version=index_ref.llama_index_version,
+        embedding_strategy=index_ref.embedding_strategy,
+        chunk_count=len(chunks),
+        built_at=index_ref.built_at,
+        source_parsed_artifact_path=None,
+        chunks=chunks,
+    )
+
+    with pytest.raises(RuntimeError, match="embedding strategy mismatch"):
+        query(
+            "交易所关注函",
+            artifact,
+            top_k=1,
+            config=AnnouncementConfig(
+                llama_index_version="llama-index-core==0.10.0",
+                allow_test_mock_embeddings=True,
+            ),
+        )
 
 
 def test_build_vector_index_rejects_unconfigured_llama_index(
@@ -208,6 +341,8 @@ def test_build_vector_index_reports_missing_llama_index_dependency(
 
 class FakeSemanticEmbedding:
     def embed(self, text: str) -> list[float]:
+        if "术语说明" in text:
+            return [0.0, 1.0]
         if "交易所关注函" in text or "监管问询函" in text:
             return [1.0, 0.0]
         if "分红" in text:
