@@ -72,16 +72,23 @@ def _artifact(local_path: Path) -> ParsedAnnouncementArtifact:
 def test_docling_dependency_is_exactly_pinned() -> None:
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = pyproject["project"]["dependencies"]
-    docling_dependencies = [
-        dependency for dependency in dependencies if dependency.startswith("docling")
+    docling_dependencies = {
+        dependency.split("==", 1)[0]: dependency
+        for dependency in dependencies
+        if dependency.startswith("docling")
+    }
+    legacy_docling_parser_dependencies = [
+        dependency
+        for dependency in dependencies
+        if dependency.startswith("llama-index-node-parser-docling")
     ]
 
-    assert docling_dependencies == ["docling==2.15.1"]
+    assert docling_dependencies == {
+        "docling": "docling==2.15.1",
+        "docling-core": "docling-core==2.13.1",
+    }
     assert not any(dependency.startswith("docling>=") for dependency in dependencies)
-    assert not any(
-        dependency.startswith("llama-index-node-parser-docling")
-        for dependency in dependencies
-    )
+    assert legacy_docling_parser_dependencies == []
 
 
 def test_parsed_artifact_round_trips_to_disk(tmp_path: Path) -> None:
