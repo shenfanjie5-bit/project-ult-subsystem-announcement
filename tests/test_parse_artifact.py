@@ -142,6 +142,24 @@ def test_write_parsed_artifact_rejects_unsafe_announcement_id(tmp_path: Path) ->
         write_parsed_artifact(unsafe, tmp_path)
 
 
+def test_write_parsed_artifact_rejects_symlinked_announcement_directory(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "ann-1.pdf"
+    source_path.write_bytes(b"%PDF fixture")
+    artifact = _artifact(source_path)
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    parsed_root = tmp_path / "parsed"
+    parsed_root.mkdir()
+    (parsed_root / "ann-1").symlink_to(outside_root, target_is_directory=True)
+
+    with pytest.raises(ParseNormalizationError, match="symlink"):
+        write_parsed_artifact(artifact, tmp_path)
+
+    assert not (outside_root / f"{'a' * 64}.json").exists()
+
+
 @pytest.mark.parametrize(
     "unsafe_hash",
     [

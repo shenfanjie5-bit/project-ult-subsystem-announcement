@@ -124,12 +124,25 @@ def write_parsed_artifact(artifact: ParsedAnnouncementArtifact, root: Path) -> P
         field_name="announcement_id",
     )
     content_hash = _safe_sha256_content_hash(artifact.content_hash)
+    parsed_root = root / "parsed"
     parsed_announcement_root = root / "parsed" / announcement_id
     path = parsed_announcement_root / f"{content_hash}.json"
-    _ensure_under_root(path, parsed_announcement_root)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        parsed_announcement_root = _prepare_parsed_announcement_root(
+            parsed_root,
+            parsed_announcement_root,
+            announcement_id=announcement_id,
+        )
+        path = parsed_announcement_root / f"{content_hash}.json"
+        if path.is_symlink():
+            raise ParseNormalizationError(
+                "Parsed artifact path is a symlink: "
+                f"announcement_id={artifact.announcement_id} path={path}"
+            )
+        _ensure_under_root(path, parsed_announcement_root)
         path.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+    except ParseNormalizationError:
+        raise
     except OSError as exc:
         raise ParseNormalizationError(
             "Unable to write parsed announcement artifact: "
@@ -176,6 +189,38 @@ def _safe_sha256_content_hash(value: str) -> str:
 
 def _is_sha256_hex_digest(value: str) -> bool:
     return bool(_SHA256_HEX_RE.fullmatch(value))
+
+
+def _prepare_parsed_announcement_root(
+    parsed_root: Path,
+    parsed_announcement_root: Path,
+    *,
+    announcement_id: str,
+) -> Path:
+    parsed_root.mkdir(parents=True, exist_ok=True)
+    resolved_parsed_root = parsed_root.resolve()
+
+    if parsed_announcement_root.is_symlink():
+        raise ParseNormalizationError(
+            "Parsed announcement directory is a symlink: "
+            f"announcement_id={announcement_id} path={parsed_announcement_root}"
+        )
+
+    parsed_announcement_root.mkdir(exist_ok=True)
+
+    if parsed_announcement_root.is_symlink():
+        raise ParseNormalizationError(
+            "Parsed announcement directory is a symlink: "
+            f"announcement_id={announcement_id} path={parsed_announcement_root}"
+        )
+    if not parsed_announcement_root.is_dir():
+        raise ParseNormalizationError(
+            "Parsed announcement path is not a directory: "
+            f"announcement_id={announcement_id} path={parsed_announcement_root}"
+        )
+
+    _ensure_under_root(parsed_announcement_root, resolved_parsed_root)
+    return parsed_announcement_root
 
 
 def _ensure_under_root(path: Path, root: Path) -> None:
