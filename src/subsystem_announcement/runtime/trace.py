@@ -16,15 +16,18 @@ _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 
 
 class CandidateSubmitTrace(BaseModel):
-    """Per-candidate submit trace for one Ex-1 candidate."""
+    """Per-candidate submit trace for one Ex candidate."""
 
     model_config = ConfigDict(extra="forbid")
 
     fact_id: str = Field(min_length=1)
+    candidate_id: str | None = None
+    ex_type: Literal["Ex-1", "Ex-2"] | None = None
     status: Literal["accepted", "duplicate", "failed"]
     receipt_id: str | None = None
     attempts: int = Field(ge=0)
     errors: list[str] = Field(default_factory=list)
+    requires_reconciliation: bool = False
 
 
 class RunTraceError(BaseModel):

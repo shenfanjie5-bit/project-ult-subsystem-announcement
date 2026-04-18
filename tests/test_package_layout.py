@@ -73,6 +73,14 @@ def test_subpackages_are_importable(subpackage: str) -> None:
             "AnnouncementPipeline",
             "submit_candidates",
         }.issubset(set(module.__all__))
+    elif subpackage == "signals":
+        assert {
+            "AnnouncementSignalCandidate",
+            "SignalDirection",
+            "SignalTemplate",
+            "SignalTimeHorizon",
+            "derive_signal_candidates",
+        }.issubset(set(module.__all__))
     else:
         assert module.__all__ == []
 
