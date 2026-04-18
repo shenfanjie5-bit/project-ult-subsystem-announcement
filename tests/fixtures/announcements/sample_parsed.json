@@ -1,0 +1,63 @@
+{
+  "announcement_id": "sample-ann-index",
+  "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "parser_version": "docling==2.15.1",
+  "title_hierarchy": [
+    "重大合同公告"
+  ],
+  "sections": [
+    {
+      "section_id": "sec-0001",
+      "title": "重大合同",
+      "level": 1,
+      "text": "公司与客户签署重大合同。合同金额1000万元。",
+      "start_offset": 0,
+      "end_offset": 23,
+      "parent_id": null
+    },
+    {
+      "section_id": "sec-0002",
+      "title": "风险提示",
+      "level": 1,
+      "text": "本合同履行存在不确定性。",
+      "start_offset": 44,
+      "end_offset": 56,
+      "parent_id": null
+    }
+  ],
+  "tables": [
+    {
+      "table_id": "tbl-0001",
+      "section_id": "sec-0001",
+      "caption": null,
+      "headers": [
+        "项目",
+        "金额"
+      ],
+      "rows": [
+        [
+          "重大合同",
+          "1000万元"
+        ]
+      ],
+      "start_offset": 25,
+      "end_offset": 42
+    }
+  ],
+  "extracted_text": "公司与客户签署重大合同。合同金额1000万元。\n\n项目\t金额\n重大合同\t1000万元\n\n本合同履行存在不确定性。",
+  "parsed_at": "2026-04-18T09:31:00+00:00",
+  "source_document": {
+    "announcement_id": "sample-ann-index",
+    "ts_code": "600000.SH",
+    "title": "重大合同公告",
+    "publish_time": "2026-04-18T09:00:00+00:00",
+    "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "official_url": "https://static.sse.com.cn/disclosure/sample-ann-index.pdf",
+    "source_exchange": "sse",
+    "attachment_type": "pdf",
+    "local_path": "tests/fixtures/announcements/sse-major-contract.pdf",
+    "content_type": "application/pdf",
+    "byte_size": 100,
+    "fetched_at": "2026-04-18T09:30:00+00:00"
+  }
+}

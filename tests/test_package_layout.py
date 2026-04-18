@@ -90,7 +90,15 @@ def test_subpackages_are_importable(subpackage: str) -> None:
             "derive_graph_delta_candidates",
         }.issubset(set(module.__all__))
     else:
-        assert module.__all__ == []
+        assert {
+            "AnnouncementChunk",
+            "AnnouncementRetrievalArtifact",
+            "AnnouncementRetrievalHit",
+            "build_retrieval_artifact",
+            "chunk_parsed_artifact",
+            "load_retrieval_artifact",
+            "query",
+        }.issubset(set(module.__all__))
 
 
 def test_config_defaults_are_instantiable() -> None:
