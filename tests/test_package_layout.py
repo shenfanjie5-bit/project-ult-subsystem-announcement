@@ -67,6 +67,12 @@ def test_subpackages_are_importable(subpackage: str) -> None:
             "classify_disclosure_types",
             "extract_fact_candidates",
         }.issubset(set(module.__all__))
+    elif subpackage == "runtime":
+        assert {
+            "AnnouncementExtractionRun",
+            "AnnouncementPipeline",
+            "submit_candidates",
+        }.issubset(set(module.__all__))
     else:
         assert module.__all__ == []
 
