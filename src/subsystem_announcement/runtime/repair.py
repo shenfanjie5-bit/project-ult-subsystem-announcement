@@ -72,6 +72,7 @@ class RepairResult(BaseModel):
     announcement_id: str = Field(min_length=1)
     parsed_artifact_path: Path
     parser_version: str = Field(min_length=1)
+    parser_core_version: str = Field(min_length=1)
     retrieval_artifact_path: Path | None
     repaired_at: datetime
 
@@ -107,6 +108,17 @@ def repair_parsed_artifact(
         raise RepairError(
             "Docling version upgrade repair produced unexpected parser_version: "
             f"expected={config.docling_version} actual={parsed_artifact.parser_version}"
+        )
+    if (
+        request.reason is RepairReason.DOCLING_VERSION_UPGRADE
+        and config.docling_core_version != "not-configured"
+        and parsed_artifact.parser_core_version != config.docling_core_version
+    ):
+        raise RepairError(
+            "Docling version upgrade repair produced unexpected "
+            "parser_core_version: "
+            f"expected={config.docling_core_version} "
+            f"actual={parsed_artifact.parser_core_version}"
         )
 
     if request.reason is RepairReason.DOCLING_VERSION_UPGRADE:
@@ -148,6 +160,7 @@ def repair_parsed_artifact(
         announcement_id=parsed_artifact.announcement_id,
         parsed_artifact_path=parsed_artifact_path,
         parser_version=parsed_artifact.parser_version,
+        parser_core_version=parsed_artifact.parser_core_version,
         retrieval_artifact_path=retrieval_artifact_path,
         repaired_at=repaired_at,
     )
@@ -247,6 +260,7 @@ def _write_latest_upgrade_pointer(
         "announcement_id": artifact.announcement_id,
         "content_hash": artifact.content_hash,
         "parser_version": artifact.parser_version,
+        "parser_core_version": artifact.parser_core_version,
         "parsed_artifact_path": str(artifact_path),
         "repaired_at": repaired_at.isoformat(),
     }
@@ -267,6 +281,10 @@ def _upgrade_artifact_root(
         _parsed_announcement_root(config, artifact.announcement_id)
         / "upgrades"
         / _safe_path_component(artifact.parser_version, field_name="parser_version")
+        / _safe_path_component(
+            artifact.parser_core_version,
+            field_name="parser_core_version",
+        )
     )
 
 

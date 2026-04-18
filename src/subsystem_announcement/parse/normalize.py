@@ -19,11 +19,17 @@ def normalize_docling_result(
     raw_result: object,
     document_ref: AnnouncementDocumentArtifact,
     parser_version: str,
+    parser_core_version: str = "not-configured",
 ) -> ParsedAnnouncementArtifact:
     """Convert a Docling result object into the persisted artifact schema."""
 
     try:
-        return _normalize_docling_result(raw_result, document_ref, parser_version)
+        return _normalize_docling_result(
+            raw_result,
+            document_ref,
+            parser_version,
+            parser_core_version,
+        )
     except ParseNormalizationError:
         raise
     except Exception as exc:
@@ -37,6 +43,7 @@ def _normalize_docling_result(
     raw_result: object,
     document_ref: AnnouncementDocumentArtifact,
     parser_version: str,
+    parser_core_version: str,
 ) -> ParsedAnnouncementArtifact:
     document = _get_value(raw_result, "document") or raw_result
     section_inputs = list(_iter_section_inputs(document))
@@ -142,6 +149,7 @@ def _normalize_docling_result(
         announcement_id=document_ref.announcement_id,
         content_hash=document_ref.content_hash,
         parser_version=parser_version,
+        parser_core_version=parser_core_version,
         title_hierarchy=title_hierarchy,
         sections=sections,
         tables=tables,

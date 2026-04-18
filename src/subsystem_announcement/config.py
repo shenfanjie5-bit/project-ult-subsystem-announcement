@@ -12,6 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DEFAULT_CONFIG_PATH = Path("config/announcement.toml")
 _DOCLING_VERSION = re.compile(r"^docling==[A-Za-z0-9][A-Za-z0-9._!+-]*$")
+_DOCLING_CORE_VERSION = re.compile(
+    r"^docling-core==[A-Za-z0-9][A-Za-z0-9._!+-]*$"
+)
 _LLAMA_INDEX_VERSION = re.compile(
     r"^llama-index(?:-core)?==[A-Za-z0-9][A-Za-z0-9._!+-]*$"
 )
@@ -28,6 +31,7 @@ class AnnouncementConfig(BaseModel):
 
     artifact_root: Path = Path("artifacts/announcement")
     docling_version: str = "not-configured"
+    docling_core_version: str = "not-configured"
     llama_index_version: str = "not-configured"
     retrieval_embedding_adapter: str | None = None
     allow_test_mock_embeddings: bool = False
@@ -46,6 +50,17 @@ class AnnouncementConfig(BaseModel):
             value,
             pattern=_DOCLING_VERSION,
             field_name="docling_version",
+        )
+
+    @field_validator("docling_core_version")
+    @classmethod
+    def validate_docling_core_version(cls, value: str) -> str:
+        """Allow only explicit docling-core pins or the unset scaffold sentinel."""
+
+        return _validate_version_field(
+            value,
+            pattern=_DOCLING_CORE_VERSION,
+            field_name="docling_core_version",
         )
 
     @field_validator("llama_index_version")

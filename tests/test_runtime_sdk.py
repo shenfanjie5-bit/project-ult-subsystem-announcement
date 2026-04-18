@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +36,11 @@ def _cli_env() -> dict[str, str]:
         else os.pathsep.join([str(SRC), existing_pythonpath])
     )
     return env
+
+
+def _require_sdk_unavailable() -> None:
+    if SDK_AVAILABLE:
+        pytest.skip("subsystem-sdk is installed; SDK-unavailable path is not active")
 
 
 def test_registration_spec_contains_module_ex_types_and_parser_version() -> None:
@@ -170,7 +176,7 @@ def test_once_rejected_submit_raises_for_health_check(fake_sdk) -> None:
         asyncio.run(run(AnnouncementConfig(heartbeat_interval_seconds=1), once=True))
 
     assert len(fake_sdk.submissions) == 1
-    assert fake_sdk.submit_results[0].accepted is False
+    assert fake_sdk.submit_results[0]["accepted"] is False
 
 
 def test_concurrent_heartbeats_keep_same_run_id() -> None:
@@ -187,6 +193,7 @@ def test_concurrent_heartbeats_keep_same_run_id() -> None:
 
 
 def test_sdk_missing_fails_without_explicit_test_stub() -> None:
+    _require_sdk_unavailable()
     assert SDK_AVAILABLE is False
     with pytest.raises(SubsystemSdkUnavailableError, match="subsystem-sdk is required"):
         AnnouncementSubsystem(AnnouncementConfig())
@@ -195,6 +202,7 @@ def test_sdk_missing_fails_without_explicit_test_stub() -> None:
 def test_sdk_missing_fails_even_with_legacy_test_stub_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _require_sdk_unavailable()
     assert SDK_AVAILABLE is False
     monkeypatch.setenv("SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB", "1")
 
@@ -251,8 +259,39 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
             self.warnings = tuple(kwargs.get("warnings", ()))
             self.errors = tuple(kwargs.get("errors", ()))
 
+    class FakeValidationResult:
+        @classmethod
+        def ok(cls, **kwargs):  # type: ignore[no-untyped-def]
+            return kwargs
+
+        @classmethod
+        def fail(cls, **kwargs):  # type: ignore[no-untyped-def]
+            return kwargs
+
+    class FakeContext:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.kwargs = kwargs
+
+    class FakeSubmitBackend:
+        pass
+
+    class FakeSubmitClient:
+        def __init__(self, backend, *, validator):  # type: ignore[no-untyped-def]
+            self.backend = backend
+            self.validator = validator
+
+    class FakeHeartbeatClient(FakeSubmitClient):
+        pass
+
+    class FakeHeartbeatAdapter:
+        def __init__(self, backend):  # type: ignore[no-untyped-def]
+            self.backend = backend
+
     def register_subsystem(spec):  # type: ignore[no-untyped-def]
         calls.append(("register", spec.kwargs))
+
+    def configure_runtime(context):  # type: ignore[no-untyped-def]
+        return nullcontext(context)
 
     def send_heartbeat(payload):  # type: ignore[no-untyped-def]
         calls.append(("heartbeat", payload))
@@ -280,13 +319,39 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
         assert "ingest_seq" not in payload
         assert "layer_b_receipt_id" not in payload
 
+    def build_ex0_payload(  # type: ignore[no-untyped-def]
+        subsystem_id,
+        version,
+        status,
+        *,
+        heartbeat_at,
+    ):
+        return {
+            "ex_type": "Ex-0",
+            "semantic": "metadata_or_heartbeat",
+            "subsystem_id": subsystem_id,
+            "version": version,
+            "heartbeat_at": heartbeat_at,
+            "status": status["status"],
+            "last_output_at": status["last_output_at"],
+            "pending_count": status["pending_count"],
+        }
+
     fake_api = sdk_adapter._SdkApi(
         subsystem_base_interface=FakeBase,
+        base_subsystem_context=FakeContext,
         registration_spec=FakeRegistrationSpec,
         submit_receipt=FakeSubmitReceipt,
+        submit_client=FakeSubmitClient,
+        heartbeat_client=FakeHeartbeatClient,
+        mock_submit_backend=FakeSubmitBackend,
+        submit_backend_heartbeat_adapter=FakeHeartbeatAdapter,
         register_subsystem=register_subsystem,
+        configure_runtime=configure_runtime,
         send_heartbeat=send_heartbeat,
         submit=submit,
+        build_ex0_payload=build_ex0_payload,
+        validation_result=FakeValidationResult,
         assert_producer_only=assert_producer_only,
     )
     monkeypatch.setattr(sdk_adapter, "SDK_AVAILABLE", True)
@@ -313,6 +378,7 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
             "heartbeat_policy_ref": "interval:60s",
             "capabilities": {
                 "parser_version": "not-configured",
+                "parser_core_version": "not-configured",
                 "registration_ttl_seconds": 900,
                 "sdk_endpoint": None,
             },
@@ -321,10 +387,7 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
     assert (
         "heartbeat",
         {
-            "subsystem_id": "subsystem-announcement",
-            "version": "0.1.0",
-            "heartbeat_at": heartbeat.timestamp,
-            "status": "ok",
+            "status": "healthy",
             "last_output_at": None,
             "pending_count": 0,
         },
@@ -333,9 +396,10 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
     assert len(submit_calls) == 1
     submit_payload = submit_calls[0][1]
     assert submit_payload["ex_type"] == "Ex-0"
+    assert submit_payload["semantic"] == "metadata_or_heartbeat"
     assert submit_payload["subsystem_id"] == "subsystem-announcement"
     assert submit_payload["version"] == "0.1.0"
-    assert submit_payload["status"] == "ok"
+    assert submit_payload["status"] == "healthy"
     assert submit_payload["pending_count"] == 0
     assert "run_id" not in submit_payload
     assert "reason" not in submit_payload
@@ -363,6 +427,7 @@ def test_load_config_rejects_non_positive_runtime_intervals(
 
 
 def test_cli_ping_fails_when_sdk_is_unavailable() -> None:
+    _require_sdk_unavailable()
     result = subprocess.run(
         [sys.executable, "-m", "subsystem_announcement", "ping"],
         cwd=ROOT,
@@ -378,6 +443,7 @@ def test_cli_ping_fails_when_sdk_is_unavailable() -> None:
 
 
 def test_cli_ping_fails_when_legacy_test_stub_env_is_set() -> None:
+    _require_sdk_unavailable()
     env = _cli_env()
     env["SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB"] = "1"
 
@@ -396,6 +462,7 @@ def test_cli_ping_fails_when_legacy_test_stub_env_is_set() -> None:
 
 
 def test_cli_run_once_fails_when_sdk_is_unavailable() -> None:
+    _require_sdk_unavailable()
     result = subprocess.run(
         [sys.executable, "-m", "subsystem_announcement", "run", "--once"],
         cwd=ROOT,

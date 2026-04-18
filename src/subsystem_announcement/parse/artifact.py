@@ -68,6 +68,7 @@ class ParsedAnnouncementArtifact(BaseModel):
     announcement_id: str = Field(min_length=1)
     content_hash: str = Field(min_length=64, max_length=64)
     parser_version: str = Field(min_length=1)
+    parser_core_version: str = Field(default="not-configured", min_length=1)
     title_hierarchy: list[str] = Field(default_factory=list)
     sections: list[AnnouncementSection] = Field(min_length=1)
     tables: list[AnnouncementTable] = Field(default_factory=list)

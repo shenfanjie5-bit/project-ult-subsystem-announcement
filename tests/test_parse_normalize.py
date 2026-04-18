@@ -57,11 +57,13 @@ def test_normalize_docling_result_builds_sections_tables_and_offsets(
         raw_result,
         _document(source_path),
         "docling==2.15.1",
+        "docling-core==2.13.1",
     )
 
     assert artifact.announcement_id == "ann-1"
     assert artifact.content_hash == "b" * 64
     assert artifact.parser_version == "docling==2.15.1"
+    assert artifact.parser_core_version == "docling-core==2.13.1"
     assert [section.section_id for section in artifact.sections] == [
         "sec-0001",
         "sec-0002",

@@ -242,6 +242,7 @@ def test_repair_docling_version_upgrade_requires_configured_parser_version(
     )
 
     assert result.parser_version == config.docling_version
+    assert result.parser_core_version == config.docling_core_version
     assert result.retrieval_artifact_path is None
     assert "upgrades" in result.parsed_artifact_path.parts
     latest_pointer = (
@@ -252,6 +253,7 @@ def test_repair_docling_version_upgrade_requires_configured_parser_version(
     )
     latest = json.loads(latest_pointer.read_text(encoding="utf-8"))
     assert latest["parsed_artifact_path"] == str(result.parsed_artifact_path)
+    assert latest["parser_core_version"] == config.docling_core_version
 
 
 def test_docling_upgrade_repair_preserves_previous_parse_when_index_fails(
@@ -260,11 +262,15 @@ def test_docling_upgrade_repair_preserves_previous_parse_when_index_fails(
     config = AnnouncementConfig(
         artifact_root=tmp_path,
         docling_version="docling==2.16.0",
+        docling_core_version="docling-core==2.13.1",
         llama_index_version="llama-index-core==0.10.0",
     )
     document = _cache_document(config, "ANN-REPAIR-003")
     previous = _fake_parse(document, config).model_copy(
-        update={"parser_version": "docling==2.15.1"}
+        update={
+            "parser_version": "docling==2.15.1",
+            "parser_core_version": "docling-core==2.12.0",
+        }
     )
     previous_path = write_parsed_artifact(previous, config.artifact_root)
 
@@ -293,6 +299,7 @@ def test_docling_upgrade_repair_preserves_previous_parse_when_index_fails(
 
     preserved = load_parsed_artifact(previous_path)
     assert preserved.parser_version == "docling==2.15.1"
+    assert preserved.parser_core_version == "docling-core==2.12.0"
     assert preserved.extracted_text == previous.extracted_text
     assert not (previous_path.parent / "latest.json").exists()
 
@@ -368,6 +375,7 @@ def _config(tmp_path: Path) -> AnnouncementConfig:
     return AnnouncementConfig(
         artifact_root=tmp_path,
         docling_version="docling==2.15.1",
+        docling_core_version="docling-core==2.13.1",
         llama_index_version="llama-index-core==0.10.0",
     )
 
@@ -412,6 +420,7 @@ def _fake_parse(
         update={
             "content_hash": document.content_hash,
             "parser_version": config.docling_version,
+            "parser_core_version": config.docling_core_version,
             "source_document": document,
         }
     )

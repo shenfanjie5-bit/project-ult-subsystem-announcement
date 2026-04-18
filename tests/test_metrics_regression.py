@@ -79,6 +79,25 @@ def test_metrics_report_satisfies_stage3_thresholds() -> None:
     assert_metrics_within_thresholds(report)
 
 
+def test_metrics_flags_docling_core_version_mismatch() -> None:
+    def stale_core_parse(
+        document: AnnouncementDocumentArtifact,
+        config: AnnouncementConfig,
+    ) -> ParsedAnnouncementArtifact:
+        return _fixture_parse(document, config).model_copy(
+            update={"parser_core_version": "docling-core==2.12.0"}
+        )
+
+    report = compute_metrics_for_manifest(
+        MANIFEST,
+        config=_config(),
+        parse_func=stale_core_parse,
+        build_retrieval_func=_fixture_build_retrieval,
+    )
+
+    assert any("parser_core_version" in diagnostic for diagnostic in report.diagnostics)
+
+
 def test_metrics_timings_are_measured_not_read_from_manifest(
     tmp_path: Path,
 ) -> None:
@@ -257,6 +276,7 @@ def _config() -> AnnouncementConfig:
     return AnnouncementConfig(
         artifact_root=ROOT / "tests" / "fixtures" / "announcements" / "artifacts",
         docling_version="docling==2.15.1",
+        docling_core_version="docling-core==2.13.1",
         llama_index_version="llama-index-core==0.10.0",
     )
 
@@ -282,6 +302,7 @@ def _fixture_parse(
         update={
             "content_hash": document.content_hash,
             "parser_version": config.docling_version,
+            "parser_core_version": config.docling_core_version,
             "source_document": document,
         }
     )

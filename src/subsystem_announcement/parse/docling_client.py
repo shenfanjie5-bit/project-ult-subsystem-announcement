@@ -14,6 +14,9 @@ from .normalize import normalize_docling_result
 
 _SUPPORTED_ATTACHMENT_TYPES = frozenset({"pdf", "html", "word"})
 _PINNED_DOCLING_VERSION = re.compile(r"^docling==[A-Za-z0-9][A-Za-z0-9._!+-]*$")
+_PINNED_DOCLING_CORE_VERSION = re.compile(
+    r"^docling-core==[A-Za-z0-9][A-Za-z0-9._!+-]*$"
+)
 
 
 class DoclingAnnouncementParser:
@@ -34,6 +37,7 @@ class DoclingAnnouncementParser:
             )
 
         parser_version = resolve_docling_version(config)
+        parser_core_version = resolve_docling_core_version(config)
         if not document_ref.local_path.exists():
             raise DoclingParseError(
                 "Announcement document is not available for Docling parse: "
@@ -59,7 +63,12 @@ class DoclingAnnouncementParser:
                 f"path={document_ref.local_path}"
             ) from exc
 
-        return normalize_docling_result(raw_result, document_ref, parser_version)
+        return normalize_docling_result(
+            raw_result,
+            document_ref,
+            parser_version,
+            parser_core_version,
+        )
 
 
 def resolve_docling_version(config: AnnouncementConfig) -> str:
@@ -76,6 +85,23 @@ def resolve_docling_version(config: AnnouncementConfig) -> str:
         raise DoclingParseError(
             "Docling parser version is not configured and the docling package "
             "is not installed; parser_version cannot be not-configured."
+        ) from None
+
+
+def resolve_docling_core_version(config: AnnouncementConfig) -> str:
+    """Resolve concrete docling-core provenance for parse artifacts."""
+
+    try:
+        return f"docling-core=={metadata.version('docling-core')}"
+    except metadata.PackageNotFoundError:
+        configured = config.docling_core_version.strip()
+        if configured != "not-configured" and _PINNED_DOCLING_CORE_VERSION.fullmatch(
+            configured
+        ):
+            return configured
+        raise DoclingParseError(
+            "Docling core version is not configured and the docling-core package "
+            "is not installed; parser_core_version cannot be not-configured."
         ) from None
 
 

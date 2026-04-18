@@ -48,15 +48,13 @@ def fake_sdk(monkeypatch: pytest.MonkeyPatch) -> FakeSDKRecorder:
             if recorder.raise_on_submit:
                 raise RuntimeError("fake submit failure")
             if recorder.reject_submit:
-                from subsystem_announcement.runtime.sdk_adapter import SubmitResult
-
-                result = SubmitResult(
-                    accepted=False,
-                    receipt_id="fake-rejected",
-                    ex_type=payload["ex_type"],
-                    warnings=(),
-                    errors=("fake rejected",),
-                )
+                result = {
+                    "accepted": False,
+                    "receipt_id": "fake-rejected",
+                    "ex_type": payload["ex_type"],
+                    "warnings": (),
+                    "errors": ("fake rejected",),
+                }
                 recorder.submit_results.append(result)
                 return result
             result = super().submit(candidate)

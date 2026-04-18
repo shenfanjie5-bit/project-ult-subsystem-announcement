@@ -7,6 +7,7 @@ import importlib.util
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import RLock
 from typing import Any, Final, TypeAlias
 from uuid import uuid4
 
@@ -38,11 +39,19 @@ class UnsupportedSubsystemSdkError(RuntimeError):
 @dataclass(frozen=True)
 class _SdkApi:
     subsystem_base_interface: type[Any]
+    base_subsystem_context: type[Any]
     registration_spec: type[Any]
     submit_receipt: type[Any]
+    submit_client: type[Any]
+    heartbeat_client: type[Any]
+    mock_submit_backend: type[Any]
+    submit_backend_heartbeat_adapter: type[Any]
     register_subsystem: Any
+    configure_runtime: Any
     send_heartbeat: Any
     submit: Any
+    build_ex0_payload: Any
+    validation_result: type[Any]
     assert_producer_only: Any
 
 
@@ -52,6 +61,7 @@ def _load_official_sdk_api() -> _SdkApi | None:
 
     try:
         base_module = importlib.import_module("subsystem_sdk.base")
+        backends_module = importlib.import_module("subsystem_sdk.backends")
         submit_module = importlib.import_module("subsystem_sdk.submit")
         heartbeat_module = importlib.import_module("subsystem_sdk.heartbeat")
         validate_module = importlib.import_module("subsystem_sdk.validate")
@@ -60,14 +70,28 @@ def _load_official_sdk_api() -> _SdkApi | None:
                 base_module,
                 "SubsystemBaseInterface",
             ),
+            base_subsystem_context=_required_symbol(
+                base_module,
+                "BaseSubsystemContext",
+            ),
             registration_spec=_required_symbol(
                 base_module,
                 "SubsystemRegistrationSpec",
             ),
             submit_receipt=_required_symbol(submit_module, "SubmitReceipt"),
+            submit_client=_required_symbol(submit_module, "SubmitClient"),
+            heartbeat_client=_required_symbol(heartbeat_module, "HeartbeatClient"),
+            mock_submit_backend=_required_symbol(backends_module, "MockSubmitBackend"),
+            submit_backend_heartbeat_adapter=_required_symbol(
+                backends_module,
+                "SubmitBackendHeartbeatAdapter",
+            ),
             register_subsystem=_required_symbol(base_module, "register_subsystem"),
+            configure_runtime=_required_symbol(base_module, "configure_runtime"),
             send_heartbeat=_required_symbol(heartbeat_module, "send_heartbeat"),
             submit=_required_symbol(submit_module, "submit"),
+            build_ex0_payload=_required_symbol(heartbeat_module, "build_ex0_payload"),
+            validation_result=_required_symbol(validate_module, "ValidationResult"),
             assert_producer_only=_required_symbol(
                 validate_module,
                 "assert_producer_only",
@@ -77,10 +101,14 @@ def _load_official_sdk_api() -> _SdkApi | None:
         raise UnsupportedSubsystemSdkError(
             "Unsupported subsystem-sdk version: expected pinned public API "
             "subsystem_sdk.base.{SubsystemBaseInterface,"
-            "SubsystemRegistrationSpec,register_subsystem}, "
-            "subsystem_sdk.submit.{SubmitReceipt,submit}, "
-            "subsystem_sdk.heartbeat.send_heartbeat, and "
-            "subsystem_sdk.validate.assert_producer_only."
+            "BaseSubsystemContext,SubsystemRegistrationSpec,"
+            "configure_runtime,register_subsystem}, "
+            "subsystem_sdk.backends.{MockSubmitBackend,"
+            "SubmitBackendHeartbeatAdapter}, "
+            "subsystem_sdk.submit.{SubmitClient,SubmitReceipt,submit}, "
+            "subsystem_sdk.heartbeat.{HeartbeatClient,build_ex0_payload,"
+            "send_heartbeat}, and subsystem_sdk.validate."
+            "{ValidationResult,assert_producer_only}."
         ) from exc
 
 
@@ -116,11 +144,15 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
                 "Install the pinned dependency or inject the local SDK stub "
                 "from test-only code."
             )
+        self._use_sdk = SDK_AVAILABLE and not _stub_explicitly_allowed(allow_sdk_stub)
         self.config = config
         self.run_id = str(uuid4())
         self.last_ex_id: str | None = None
         self.last_submit_failed = False
         self._submit_seq = 0
+        self._sdk_context: Any | None = None
+        self._sdk_context_lock = RLock()
+        self._sdk_registration_spec: Any | None = None
 
     def on_register(self) -> RegistrationSpec:
         """Return this subsystem's registration spec."""
@@ -128,10 +160,8 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
         from .registration import build_registration_spec
 
         spec = build_registration_spec(self.config)
-        if SDK_AVAILABLE:
-            _require_sdk_api().register_subsystem(
-                _to_sdk_registration_spec(spec, self.config),
-            )
+        if self._use_sdk:
+            _require_sdk_api().register_subsystem(self._get_sdk_registration_spec())
         return spec
 
     def on_heartbeat(self) -> HeartbeatPayload:
@@ -146,26 +176,28 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
             last_ex_id=self.last_ex_id,
             status="degraded" if self.last_submit_failed else "ok",
         )
-        if SDK_AVAILABLE:
-            sdk_payload = _to_sdk_heartbeat_payload(payload)
-            _validate_sdk_payload("Ex-0", sdk_payload)
-            _ensure_accepted(
-                _require_sdk_api().send_heartbeat(sdk_payload),
-                "heartbeat",
-            )
+        if self._use_sdk:
+            sdk_status = _to_sdk_heartbeat_status(payload)
+            with _require_sdk_api().configure_runtime(self._get_sdk_context()):
+                _ensure_accepted(
+                    _require_sdk_api().send_heartbeat(sdk_status),
+                    "heartbeat",
+                )
         return payload
 
     def submit(self, candidate: ExPayload) -> SubmitResult:
         """Submit a candidate through the SDK surface."""
 
         ex_type = _payload_ex_type(candidate)
-        if SDK_AVAILABLE:
+        if self._use_sdk:
             sdk_payload = _to_sdk_submit_payload(candidate)
             _validate_sdk_payload(ex_type, sdk_payload)
-            result = _coerce_submit_result(
-                _require_sdk_api().submit(sdk_payload),
-                ex_type,
-            )
+            with _require_sdk_api().configure_runtime(self._get_sdk_context()):
+                result = _coerce_submit_result(
+                    _require_sdk_api().submit(sdk_payload),
+                    ex_type,
+                    use_sdk=True,
+                )
             if getattr(result, "accepted", False):
                 self.last_ex_id = getattr(result, "receipt_id", None)
             return result
@@ -173,13 +205,32 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
         self._submit_seq += 1
         receipt_id = f"{self.run_id}:{self._submit_seq}"
         self.last_ex_id = receipt_id
-        return SubmitResult(
+        return StubSubmitResult(
             accepted=True,
             receipt_id=receipt_id,
             ex_type=ex_type,
             warnings=(),
             errors=(),
         )
+
+    def _get_sdk_registration_spec(self) -> Any:
+        if self._sdk_registration_spec is None:
+            from .registration import build_registration_spec
+
+            self._sdk_registration_spec = _to_sdk_registration_spec(
+                build_registration_spec(self.config),
+                self.config,
+            )
+        return self._sdk_registration_spec
+
+    def _get_sdk_context(self) -> Any:
+        if self._sdk_context is None:
+            with self._sdk_context_lock:
+                if self._sdk_context is None:
+                    self._sdk_context = _build_sdk_runtime_context(
+                        self._get_sdk_registration_spec()
+                    )
+        return self._sdk_context
 
 
 def _stub_explicitly_allowed(allow_sdk_stub: bool) -> bool:
@@ -234,18 +285,16 @@ def _to_sdk_registration_spec(
         heartbeat_policy_ref=f"interval:{config.heartbeat_interval_seconds}s",
         capabilities={
             "parser_version": spec.parser_version,
+            "parser_core_version": config.docling_core_version,
             "registration_ttl_seconds": spec.registration_ttl_seconds,
             "sdk_endpoint": spec.sdk_endpoint,
         },
     )
 
 
-def _to_sdk_heartbeat_payload(payload: HeartbeatPayload) -> dict[str, Any]:
+def _to_sdk_heartbeat_status(payload: HeartbeatPayload) -> dict[str, Any]:
     return {
-        "subsystem_id": PACKAGE_NAME,
-        "version": __version__,
-        "heartbeat_at": payload.timestamp,
-        "status": payload.status,
+        "status": _sdk_heartbeat_state(payload.status),
         "last_output_at": None,
         "pending_count": 0,
     }
@@ -259,15 +308,58 @@ def _to_sdk_submit_payload(candidate: PayloadLike) -> dict[str, Any]:
     heartbeat_at = payload.get("emitted_at")
     if not isinstance(heartbeat_at, datetime):
         heartbeat_at = datetime.now(timezone.utc)
-    return {
-        "ex_type": "Ex-0",
-        "subsystem_id": PACKAGE_NAME,
-        "version": __version__,
-        "heartbeat_at": heartbeat_at,
-        "status": "ok",
-        "last_output_at": heartbeat_at,
-        "pending_count": 0,
-    }
+    return _require_sdk_api().build_ex0_payload(
+        PACKAGE_NAME,
+        __version__,
+        {
+            "status": "healthy",
+            "last_output_at": heartbeat_at,
+            "pending_count": 0,
+        },
+        heartbeat_at=heartbeat_at,
+    )
+
+
+def _build_sdk_runtime_context(registration_spec: Any) -> Any:
+    sdk_api = _require_sdk_api()
+    submit_backend = sdk_api.mock_submit_backend()
+    validator = _validate_sdk_payload_result
+    return sdk_api.base_subsystem_context(
+        registration=registration_spec,
+        submit_client=sdk_api.submit_client(submit_backend, validator=validator),
+        heartbeat_client=sdk_api.heartbeat_client(
+            sdk_api.submit_backend_heartbeat_adapter(submit_backend),
+            validator=validator,
+        ),
+        validator=validator,
+    )
+
+
+def _validate_sdk_payload_result(payload: Mapping[str, Any]) -> Any:
+    sdk_api = _require_sdk_api()
+    ex_type = payload.get("ex_type")
+    if ex_type not in {"Ex-0", "Ex-1", "Ex-2", "Ex-3"}:
+        ex_type = "Ex-0"
+    try:
+        sdk_api.assert_producer_only(payload)
+    except Exception as exc:
+        return sdk_api.validation_result.fail(
+            ex_type=ex_type,
+            schema_version="producer-semantics",
+            field_errors=(str(exc),),
+        )
+    return sdk_api.validation_result.ok(
+        ex_type=ex_type,
+        schema_version="producer-semantics",
+    )
+
+
+def _sdk_heartbeat_state(status: str) -> str:
+    if status == "ok":
+        return "healthy"
+    if status in {"healthy", "degraded", "unhealthy"}:
+        return status
+    return "degraded"
 
 
 def _validate_sdk_payload(ex_type: str, payload: Mapping[str, Any]) -> None:
@@ -289,8 +381,8 @@ def _ensure_accepted(raw_result: Any, operation: str) -> None:
     raise RuntimeError(_rejection_message(raw_result, operation))
 
 
-def _coerce_submit_result(raw_result: Any, ex_type: str) -> SubmitResult:
-    result_model = _submit_result_model()
+def _coerce_submit_result(raw_result: Any, ex_type: str, *, use_sdk: bool) -> Any:
+    result_model = _submit_result_model(use_sdk=use_sdk)
     if isinstance(raw_result, result_model):
         return raw_result
 
@@ -315,13 +407,13 @@ def _coerce_submit_result(raw_result: Any, ex_type: str) -> SubmitResult:
 
     result_data.setdefault("warnings", ())
     result_data.setdefault("errors", ())
-    if not SDK_AVAILABLE:
+    if not use_sdk:
         result_data.setdefault("ex_type", ex_type)
     return result_model(**result_data)
 
 
-def _submit_result_model() -> type[Any]:
-    if SDK_AVAILABLE and _SDK_API is not None:
+def _submit_result_model(*, use_sdk: bool) -> type[Any]:
+    if use_sdk and _SDK_API is not None:
         return _SDK_API.submit_receipt
     return StubSubmitResult
 

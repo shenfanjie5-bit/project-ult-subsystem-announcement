@@ -125,6 +125,9 @@ def test_config_rejects_unpinned_parser_and_index_versions() -> None:
     with pytest.raises(ValidationError, match="docling_version"):
         AnnouncementConfig(docling_version="docling>=2")
 
+    with pytest.raises(ValidationError, match="docling_core_version"):
+        AnnouncementConfig(docling_core_version="docling-core>=2")
+
     with pytest.raises(ValidationError, match="llama_index_version"):
         AnnouncementConfig(llama_index_version="llama-index>=0.11")
 
@@ -156,6 +159,7 @@ def test_cli_doctor_loads_default_config() -> None:
     assert result.returncode == 0
     assert "ok" in result.stdout.splitlines()
     assert "parser_version=not-configured (unset)" in result.stdout.splitlines()
+    assert "parser_core_version=not-configured (unset)" in result.stdout.splitlines()
     assert "index_version=not-configured (unset)" in result.stdout.splitlines()
 
 

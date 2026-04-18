@@ -16,6 +16,7 @@ from subsystem_announcement.discovery.document import AnnouncementDocumentArtifa
 from subsystem_announcement.parse import ParsedAnnouncementArtifact, parse_announcement
 from subsystem_announcement.parse.docling_client import (
     DoclingAnnouncementParser,
+    resolve_docling_core_version,
     resolve_docling_version,
 )
 from subsystem_announcement.parse.errors import (
@@ -56,6 +57,18 @@ def test_resolve_docling_version_prefers_installed_metadata(
     assert version == "docling==2.99.0"
 
 
+def test_resolve_docling_core_version_prefers_installed_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(docling_client.metadata, "version", lambda name: "2.88.0")
+
+    version = resolve_docling_core_version(
+        AnnouncementConfig(docling_core_version="docling-core==2.13.1")
+    )
+
+    assert version == "docling-core==2.88.0"
+
+
 def test_resolve_docling_version_uses_validated_config_when_package_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -67,6 +80,22 @@ def test_resolve_docling_version_uses_validated_config_when_package_missing(
     assert (
         resolve_docling_version(AnnouncementConfig(docling_version="docling==2.15.1"))
         == "docling==2.15.1"
+    )
+
+
+def test_resolve_docling_core_version_uses_validated_config_when_package_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_version(name: str) -> str:
+        raise docling_client.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(docling_client.metadata, "version", missing_version)
+
+    assert (
+        resolve_docling_core_version(
+            AnnouncementConfig(docling_core_version="docling-core==2.13.1")
+        )
+        == "docling-core==2.13.1"
     )
 
 
@@ -109,10 +138,14 @@ def test_parse_announcement_uses_docling_boundary(
 
     artifact = parse_announcement(
         _document(source_path),
-        AnnouncementConfig(docling_version="docling==2.15.1"),
+        AnnouncementConfig(
+            docling_version="docling==2.15.1",
+            docling_core_version="docling-core==2.13.1",
+        ),
     )
 
     assert isinstance(artifact, ParsedAnnouncementArtifact)
+    assert artifact.parser_core_version == "docling-core==2.13.1"
     assert converted_paths == [str(source_path)]
     assert artifact.sections[0].text == "公司签署重大合同。"
 
@@ -149,7 +182,10 @@ def test_parse_announcement_wraps_docling_failures(
     with pytest.raises(DoclingParseError, match="Docling failed"):
         parse_announcement(
             _document(source_path),
-            AnnouncementConfig(docling_version="docling==2.15.1"),
+            AnnouncementConfig(
+                docling_version="docling==2.15.1",
+                docling_core_version="docling-core==2.13.1",
+            ),
         )
 
 
@@ -250,7 +286,10 @@ def test_manifest_samples_parse_through_docling_boundary_smoke(
             }
 
     _install_fake_docling(monkeypatch, ManifestDocumentConverter)
-    config = AnnouncementConfig(docling_version="docling==2.15.1")
+    config = AnnouncementConfig(
+        docling_version="docling==2.15.1",
+        docling_core_version="docling-core==2.13.1",
+    )
 
     for sample in manifest["samples"]:
         sample_path = fixture_root / sample["file"]

@@ -187,6 +187,15 @@ def compute_metrics_for_manifest(
                 f"{sample_id}: parser_version {parsed_artifact.parser_version!r} "
                 f"does not match config {config.docling_version!r}"
             )
+        if (
+            config.docling_core_version != "not-configured"
+            and parsed_artifact.parser_core_version != config.docling_core_version
+        ):
+            diagnostics.append(
+                f"{sample_id}: parser_core_version "
+                f"{parsed_artifact.parser_core_version!r} does not match config "
+                f"{config.docling_core_version!r}"
+            )
         if parsed_artifact.content_hash != document_artifact.content_hash:
             diagnostics.append(
                 f"{sample_id}: parsed content_hash does not match fixture document"

@@ -480,6 +480,7 @@ def _doctor_report(config: AnnouncementConfig) -> str:
         [
             "ok",
             f"parser_version={_version_status(config.docling_version)}",
+            f"parser_core_version={_version_status(config.docling_core_version)}",
             f"index_version={_version_status(config.llama_index_version)}",
         ]
     )

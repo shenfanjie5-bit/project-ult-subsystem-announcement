@@ -40,6 +40,7 @@ def _artifact(local_path: Path) -> ParsedAnnouncementArtifact:
         announcement_id="ann-1",
         content_hash="a" * 64,
         parser_version="docling==2.15.1",
+        parser_core_version="docling-core==2.13.1",
         title_hierarchy=["重大合同公告"],
         sections=[
             AnnouncementSection(
@@ -101,6 +102,7 @@ def test_parsed_artifact_round_trips_to_disk(tmp_path: Path) -> None:
 
     assert artifact_path == tmp_path / "parsed" / "ann-1" / f"{'a' * 64}.json"
     assert loaded == artifact
+    assert loaded.parser_core_version == "docling-core==2.13.1"
     assert loaded.announcement_id == loaded.source_document.announcement_id
     assert loaded.content_hash == loaded.source_document.content_hash
 
