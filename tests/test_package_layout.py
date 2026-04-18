@@ -59,6 +59,14 @@ def test_subpackages_are_importable(subpackage: str) -> None:
             "ParsedAnnouncementArtifact",
             "parse_announcement",
         }.issubset(set(module.__all__))
+    elif subpackage == "extract":
+        assert {
+            "AnnouncementFactCandidate",
+            "EvidenceSpan",
+            "FactType",
+            "classify_disclosure_types",
+            "extract_fact_candidates",
+        }.issubset(set(module.__all__))
     else:
         assert module.__all__ == []
 
