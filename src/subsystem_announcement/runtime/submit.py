@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -12,11 +14,18 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from subsystem_announcement.discovery.errors import NonOfficialSourceError
+from subsystem_announcement.discovery.fetcher import _validate_official_url_text
 from subsystem_announcement.extract import AnnouncementFactCandidate
 from subsystem_announcement.extract.candidates import FORBIDDEN_PAYLOAD_KEYS
 
 from .sdk_adapter import AnnouncementSubsystem
 from .trace import CandidateSubmitTrace
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - fcntl is available on supported CI hosts.
+    fcntl = None  # type: ignore[assignment]
 
 
 _FORBIDDEN_RUNTIME_KEYS = FORBIDDEN_PAYLOAD_KEYS | {
@@ -60,11 +69,21 @@ class SubmitBatchResult(BaseModel):
 class SubmitIdempotencyStore:
     """Idempotency records keyed by ``fact_id`` and payload hash."""
 
+    _path_locks: dict[Path, threading.RLock] = {}
+    _path_locks_guard = threading.Lock()
+
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path is not None else None
+        self._lock_path = (
+            self.path.expanduser().resolve(strict=False)
+            if self.path is not None
+            else None
+        )
+        self._thread_lock = self._get_thread_lock(self._lock_path)
         self._records: dict[str, CandidateSubmitReceipt] = {}
         if self.path is not None and self.path.exists():
-            self._load()
+            with self.locked():
+                pass
 
     def seen(
         self,
@@ -73,7 +92,8 @@ class SubmitIdempotencyStore:
     ) -> CandidateSubmitReceipt | None:
         """Return the previous receipt for an identical candidate payload."""
 
-        return self._records.get(_idempotency_key(candidate_id, payload_hash))
+        with self.locked():
+            return self._seen_loaded(candidate_id, payload_hash)
 
     def record(
         self,
@@ -83,6 +103,70 @@ class SubmitIdempotencyStore:
     ) -> None:
         """Record an accepted candidate receipt."""
 
+        with self.locked():
+            self._record_loaded(candidate_id, payload_hash, receipt)
+
+    @contextmanager
+    def locked(self) -> Any:
+        """Hold the in-process and file-backed idempotency locks."""
+
+        with self._thread_lock:
+            with self._file_lock():
+                if self.path is not None:
+                    if self.path.exists():
+                        self._load()
+                    else:
+                        self._records = {}
+                yield
+
+    @classmethod
+    def _get_thread_lock(cls, lock_path: Path | None) -> threading.RLock:
+        if lock_path is None:
+            return threading.RLock()
+        with cls._path_locks_guard:
+            lock = cls._path_locks.get(lock_path)
+            if lock is None:
+                lock = threading.RLock()
+                cls._path_locks[lock_path] = lock
+            return lock
+
+    @contextmanager
+    def _file_lock(self) -> Any:
+        if self.path is None:
+            yield
+            return
+        if fcntl is None:
+            raise RuntimeError(
+                "File-backed submit idempotency requires fcntl locking support"
+            )
+
+        lock_path = self.path.with_name(f"{self.path.name}.lock")
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+", encoding="utf-8") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Unable to lock submit idempotency store: path={self.path}"
+            ) from exc
+
+    def _seen_loaded(
+        self,
+        candidate_id: str,
+        payload_hash: str,
+    ) -> CandidateSubmitReceipt | None:
+        return self._records.get(_idempotency_key(candidate_id, payload_hash))
+
+    def _record_loaded(
+        self,
+        candidate_id: str,
+        payload_hash: str,
+        receipt: CandidateSubmitReceipt,
+    ) -> None:
         self._records[_idempotency_key(candidate_id, payload_hash)] = receipt
         self._persist()
 
@@ -166,36 +250,37 @@ def submit_candidates(
             traces.append(trace)
             continue
 
-        previous_receipt = store.seen(candidate.fact_id, payload_hash)
-        if previous_receipt is not None:
-            skipped_duplicates += 1
-            trace = CandidateSubmitTrace(
-                fact_id=candidate.fact_id,
-                status="duplicate",
-                receipt_id=previous_receipt.receipt_id,
-                attempts=0,
-                errors=[],
+        with store.locked():
+            previous_receipt = store._seen_loaded(candidate.fact_id, payload_hash)
+            if previous_receipt is not None:
+                skipped_duplicates += 1
+                trace = CandidateSubmitTrace(
+                    fact_id=candidate.fact_id,
+                    status="duplicate",
+                    receipt_id=previous_receipt.receipt_id,
+                    attempts=0,
+                    errors=[],
+                )
+                receipts.append(previous_receipt)
+                traces.append(trace)
+                continue
+
+            receipt, trace = _submit_one(
+                candidate.fact_id,
+                payload_hash,
+                payload,
+                subsystem,
+                max_attempts=max_attempts,
             )
-            receipts.append(previous_receipt)
             traces.append(trace)
-            continue
+            if receipt is None:
+                failed += 1
+                failures.append(trace)
+                continue
 
-        receipt, trace = _submit_one(
-            candidate.fact_id,
-            payload_hash,
-            payload,
-            subsystem,
-            max_attempts=max_attempts,
-        )
-        traces.append(trace)
-        if receipt is None:
-            failed += 1
-            failures.append(trace)
-            continue
-
-        submitted += 1
-        receipts.append(receipt)
-        store.record(candidate.fact_id, payload_hash, receipt)
+            submitted += 1
+            receipts.append(receipt)
+            store._record_loaded(candidate.fact_id, payload_hash, receipt)
 
     return SubmitBatchResult(
         submitted=submitted,
@@ -296,6 +381,15 @@ def _validate_source_reference(
     parsed_url = urlsplit(official_url)
     if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
         raise ValueError("source_reference.official_url must be an official HTTP URL")
+    try:
+        _validate_official_url_text(
+            official_url,
+            announcement_id=str(payload.get("announcement_id") or "unknown"),
+        )
+    except NonOfficialSourceError as exc:
+        raise ValueError(
+            "source_reference.official_url must use an official disclosure domain"
+        ) from exc
     source_announcement_id = source_reference.get("announcement_id")
     if (
         source_announcement_id is not None

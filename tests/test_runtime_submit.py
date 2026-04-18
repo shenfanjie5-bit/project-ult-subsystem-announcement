@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import threading
 from typing import Any
 
 from subsystem_announcement.extract import AnnouncementFactCandidate, extract_fact_candidates
@@ -26,6 +27,27 @@ class RecordingSubsystem:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
+
+
+class BlockingSubsystem:
+    def __init__(self) -> None:
+        self.submissions: list[dict[str, Any]] = []
+        self.first_submit_started = threading.Event()
+        self.second_submit_started = threading.Event()
+        self.release_submit = threading.Event()
+        self._lock = threading.Lock()
+
+    def submit(self, candidate: dict[str, Any]) -> Any:
+        with self._lock:
+            self.submissions.append(candidate)
+            call_count = len(self.submissions)
+            if call_count == 1:
+                self.first_submit_started.set()
+            if call_count == 2:
+                self.second_submit_started.set()
+        if not self.release_submit.wait(timeout=2):
+            raise TimeoutError("test submit was not released")
+        return _accepted(f"receipt-{call_count}")
 
 
 def test_submit_candidates_preserves_order_and_records_receipts() -> None:
@@ -65,6 +87,48 @@ def test_submit_candidates_skips_duplicate_fact_id_and_payload_hash() -> None:
     assert second.receipts[0].receipt_id == "receipt-original"
     assert second.traces[0].status == "duplicate"
     assert second.traces[0].receipt_id == "receipt-original"
+
+
+def test_submit_candidates_serializes_file_backed_idempotency(
+    tmp_path,
+) -> None:
+    fact = _fact("ann-concurrent-duplicate")
+    subsystem = BlockingSubsystem()
+    store_path = tmp_path / "runs" / "submit_idempotency.json"
+    results: list[Any] = [None, None]
+    errors: list[BaseException | None] = [None, None]
+
+    def submit_with_store(index: int) -> None:
+        try:
+            results[index] = submit_candidates(
+                [fact],
+                subsystem,  # type: ignore[arg-type]
+                idempotency_store=SubmitIdempotencyStore(store_path),
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below.
+            errors[index] = exc
+
+    first = threading.Thread(target=submit_with_store, args=(0,))
+    second = threading.Thread(target=submit_with_store, args=(1,))
+
+    first.start()
+    assert subsystem.first_submit_started.wait(timeout=2)
+    second.start()
+    assert not subsystem.second_submit_started.wait(timeout=0.2)
+    subsystem.release_submit.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == [None, None]
+    assert len(subsystem.submissions) == 1
+    assert [result.submitted for result in results] == [1, 0]
+    assert [result.skipped_duplicates for result in results] == [0, 1]
+    assert [result.traces[0].status for result in results] == [
+        "accepted",
+        "duplicate",
+    ]
 
 
 def test_submit_candidates_retries_transient_exception() -> None:
@@ -132,6 +196,26 @@ def test_submit_candidates_rejects_runtime_metadata_before_sdk_call() -> None:
     assert result.failed == 1
     assert subsystem.submissions == []
     assert "forbidden" in result.failures[0].errors[0]
+
+
+def test_submit_candidates_rejects_non_official_source_reference_before_sdk_call() -> None:
+    fact = _fact("ann-non-official-source")
+    invalid = fact.model_copy(
+        update={
+            "source_reference": {
+                **fact.source_reference,
+                "official_url": "https://example.com/disclosure/ann.pdf",
+            }
+        }
+    )
+    subsystem = RecordingSubsystem([_accepted("should-not-submit")])
+
+    result = submit_candidates([invalid], subsystem)  # type: ignore[arg-type]
+
+    assert result.submitted == 0
+    assert result.failed == 1
+    assert subsystem.submissions == []
+    assert "official disclosure domain" in result.failures[0].errors[0]
 
 
 def test_runtime_submit_does_not_import_sdk_transport_directly() -> None:
