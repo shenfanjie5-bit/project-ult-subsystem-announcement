@@ -4,6 +4,8 @@ import inspect
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from subsystem_announcement.config import AnnouncementConfig
 from subsystem_announcement.index.retrieval_artifact import (
     AnnouncementRetrievalArtifact,
@@ -55,6 +57,74 @@ def test_retrieval_artifact_builds_and_round_trips(
     assert loaded.chunk_count == 3
     assert loaded.chunk_refs == [chunk.chunk_id for chunk in loaded.chunks]
     assert loaded.index_ref == str(tmp_path / "index-output" / "vector_store")
+
+
+@pytest.mark.parametrize(
+    "announcement_id",
+    ["../x", "/abs/path", "a/b", ".", "..", "ann\x00index"],
+)
+def test_retrieval_artifact_rejects_unsafe_default_announcement_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    announcement_id: str,
+) -> None:
+    parsed_artifact = make_index_artifact(tmp_path)
+    unsafe_artifact = parsed_artifact.model_copy(
+        update={
+            "announcement_id": announcement_id,
+            "source_document": parsed_artifact.source_document.model_copy(
+                update={"announcement_id": announcement_id}
+            ),
+        }
+    )
+    config = AnnouncementConfig(
+        artifact_root=tmp_path / "artifacts",
+        llama_index_version="llama-index-core==0.10.0",
+    )
+
+    def fail_build_vector_index(*args, **kwargs):
+        raise AssertionError("unsafe announcement_id reached vector index build")
+
+    monkeypatch.setattr(
+        "subsystem_announcement.index.vector_store.build_vector_index",
+        fail_build_vector_index,
+    )
+
+    with pytest.raises(ValueError, match="Unsafe announcement_id"):
+        build_retrieval_artifact(unsafe_artifact, config=config)
+
+
+def test_retrieval_artifact_rejects_default_vector_store_symlink_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parsed_artifact = make_index_artifact(tmp_path)
+    config = AnnouncementConfig(
+        artifact_root=tmp_path / "artifacts",
+        llama_index_version="llama-index-core==0.10.0",
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    vector_store_dir = (
+        tmp_path
+        / "artifacts"
+        / "index"
+        / parsed_artifact.announcement_id
+        / "vector_store"
+    )
+    vector_store_dir.parent.mkdir(parents=True)
+    vector_store_dir.symlink_to(outside, target_is_directory=True)
+
+    def fail_build_vector_index(*args, **kwargs):
+        raise AssertionError("unsafe vector_store path reached vector index build")
+
+    monkeypatch.setattr(
+        "subsystem_announcement.index.vector_store.build_vector_index",
+        fail_build_vector_index,
+    )
+
+    with pytest.raises(ValueError, match="Vector Store Directory is a symlink"):
+        build_retrieval_artifact(parsed_artifact, config=config)
 
 
 def test_retrieval_artifact_rejects_inconsistent_chunk_refs(

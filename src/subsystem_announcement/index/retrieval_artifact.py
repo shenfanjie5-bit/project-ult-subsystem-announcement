@@ -119,15 +119,19 @@ def build_retrieval_artifact(
     from .chunker import chunk_parsed_artifact
     from .vector_store import build_vector_index
 
-    root = (
-        Path(output_root)
-        if output_root is not None
-        else Path(config.artifact_root) / "index" / parsed_artifact.announcement_id
-    )
+    if output_root is None:
+        root, vector_store_dir = _prepare_default_output_paths(
+            config,
+            parsed_artifact.announcement_id,
+        )
+    else:
+        root = Path(output_root)
+        vector_store_dir = root / "vector_store"
+
     chunks = chunk_parsed_artifact(parsed_artifact)
     vector_ref = build_vector_index(
         chunks,
-        persist_dir=root / "vector_store",
+        persist_dir=vector_store_dir,
         config=config,
     )
     return AnnouncementRetrievalArtifact(
@@ -170,4 +174,100 @@ def load_retrieval_artifact(path: Path) -> AnnouncementRetrievalArtifact:
     except (OSError, ValueError) as exc:
         raise RuntimeError(
             f"Unable to load retrieval artifact: path={artifact_path}"
+        ) from exc
+
+
+def _prepare_default_output_paths(
+    config: AnnouncementConfig,
+    announcement_id: str,
+) -> tuple[Path, Path]:
+    safe_announcement_id = _safe_path_component(
+        announcement_id,
+        field_name="announcement_id",
+    )
+    index_root = Path(config.artifact_root) / "index"
+    output_root = index_root / safe_announcement_id
+    output_root, resolved_index_root = _prepare_directory_under_root(
+        index_root,
+        output_root,
+        description="retrieval announcement directory",
+        announcement_id=safe_announcement_id,
+    )
+    vector_store_dir = output_root / "vector_store"
+    vector_store_dir, _ = _prepare_directory_under_root(
+        index_root,
+        vector_store_dir,
+        description="retrieval vector store directory",
+        announcement_id=safe_announcement_id,
+        resolved_root=resolved_index_root,
+    )
+    return output_root, vector_store_dir
+
+
+def _safe_path_component(value: str, *, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or value in {"", ".", ".."}
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+        or Path(value).is_absolute()
+    ):
+        raise ValueError(f"Unsafe {field_name} for retrieval index path: {value!r}")
+    return value
+
+
+def _prepare_directory_under_root(
+    root: Path,
+    path: Path,
+    *,
+    description: str,
+    announcement_id: str,
+    resolved_root: Path | None = None,
+) -> tuple[Path, Path]:
+    if root.is_symlink():
+        raise ValueError(
+            "Retrieval index root is a symlink: "
+            f"announcement_id={announcement_id} path={root}"
+        )
+    root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink():
+        raise ValueError(
+            "Retrieval index root is a symlink: "
+            f"announcement_id={announcement_id} path={root}"
+        )
+    if not root.is_dir():
+        raise ValueError(
+            "Retrieval index root is not a directory: "
+            f"announcement_id={announcement_id} path={root}"
+        )
+
+    resolved_root = resolved_root or root.resolve()
+    if path.is_symlink():
+        raise ValueError(
+            f"{description.title()} is a symlink: "
+            f"announcement_id={announcement_id} path={path}"
+        )
+    path.mkdir(exist_ok=True)
+    if path.is_symlink():
+        raise ValueError(
+            f"{description.title()} is a symlink: "
+            f"announcement_id={announcement_id} path={path}"
+        )
+    if not path.is_dir():
+        raise ValueError(
+            f"{description.title()} is not a directory: "
+            f"announcement_id={announcement_id} path={path}"
+        )
+    _ensure_under_resolved_root(path, resolved_root)
+    return path, resolved_root
+
+
+def _ensure_under_resolved_root(path: Path, resolved_root: Path) -> None:
+    try:
+        path.resolve().relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(
+            "Retrieval index path escaped retrieval index root: "
+            f"path={path} root={resolved_root}"
         ) from exc
