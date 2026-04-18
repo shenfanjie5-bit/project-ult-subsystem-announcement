@@ -128,7 +128,10 @@ def write_parsed_artifact(artifact: ParsedAnnouncementArtifact, root: Path) -> P
     parsed_announcement_root = root / "parsed" / announcement_id
     path = parsed_announcement_root / f"{content_hash}.json"
     try:
-        parsed_announcement_root = _prepare_parsed_announcement_root(
+        (
+            parsed_announcement_root,
+            resolved_parsed_announcement_root,
+        ) = _prepare_parsed_announcement_root(
             parsed_root,
             parsed_announcement_root,
             announcement_id=announcement_id,
@@ -139,7 +142,7 @@ def write_parsed_artifact(artifact: ParsedAnnouncementArtifact, root: Path) -> P
                 "Parsed artifact path is a symlink: "
                 f"announcement_id={artifact.announcement_id} path={path}"
             )
-        _ensure_under_root(path, parsed_announcement_root)
+        _ensure_under_resolved_root(path, resolved_parsed_announcement_root)
         path.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
     except ParseNormalizationError:
         raise
@@ -196,8 +199,24 @@ def _prepare_parsed_announcement_root(
     parsed_announcement_root: Path,
     *,
     announcement_id: str,
-) -> Path:
+) -> tuple[Path, Path]:
+    if parsed_root.is_symlink():
+        raise ParseNormalizationError(
+            "Parsed artifact root is a symlink: "
+            f"announcement_id={announcement_id} path={parsed_root}"
+        )
     parsed_root.mkdir(parents=True, exist_ok=True)
+
+    if parsed_root.is_symlink():
+        raise ParseNormalizationError(
+            "Parsed artifact root is a symlink: "
+            f"announcement_id={announcement_id} path={parsed_root}"
+        )
+    if not parsed_root.is_dir():
+        raise ParseNormalizationError(
+            "Parsed artifact root is not a directory: "
+            f"announcement_id={announcement_id} path={parsed_root}"
+        )
     resolved_parsed_root = parsed_root.resolve()
 
     if parsed_announcement_root.is_symlink():
@@ -219,14 +238,19 @@ def _prepare_parsed_announcement_root(
             f"announcement_id={announcement_id} path={parsed_announcement_root}"
         )
 
-    _ensure_under_root(parsed_announcement_root, resolved_parsed_root)
-    return parsed_announcement_root
+    resolved_parsed_announcement_root = parsed_announcement_root.resolve()
+    _ensure_under_resolved_root(
+        resolved_parsed_announcement_root,
+        resolved_parsed_root,
+    )
+    return parsed_announcement_root, resolved_parsed_announcement_root
 
 
-def _ensure_under_root(path: Path, root: Path) -> None:
+def _ensure_under_resolved_root(path: Path, resolved_root: Path) -> None:
     try:
-        path.resolve().relative_to(root.resolve())
+        path.resolve().relative_to(resolved_root)
     except ValueError as exc:
         raise ParseNormalizationError(
-            f"Parsed artifact path escaped parsed announcement root: path={path} root={root}"
+            "Parsed artifact path escaped parsed announcement root: "
+            f"path={path} root={resolved_root}"
         ) from exc
