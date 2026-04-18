@@ -16,7 +16,7 @@ dependencies = [
     "typer>=0.12",
     "structlog>=24.1",
     "httpx>=0.27",
-    "subsystem-sdk>=0.1.0",
+    "project-ult-subsystem-sdk>=0.1.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
