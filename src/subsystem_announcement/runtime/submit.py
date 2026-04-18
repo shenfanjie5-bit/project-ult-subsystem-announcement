@@ -36,6 +36,7 @@ _FORBIDDEN_RUNTIME_KEYS = FORBIDDEN_PAYLOAD_KEYS | {
     "document_artifact_path",
     "parsed_artifact_path",
 }
+_VOLATILE_IDEMPOTENCY_PAYLOAD_KEYS = {"extracted_at"}
 
 
 class CandidateSubmitReceipt(BaseModel):
@@ -413,9 +414,14 @@ def _reject_forbidden_runtime_keys(value: Any, path: str = "") -> None:
 
 
 def _payload_hash(payload: Mapping[str, Any]) -> str:
+    stable_payload = {
+        key: value
+        for key, value in payload.items()
+        if key not in _VOLATILE_IDEMPOTENCY_PAYLOAD_KEYS
+    }
     return hashlib.sha256(
         json.dumps(
-            payload,
+            stable_payload,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),

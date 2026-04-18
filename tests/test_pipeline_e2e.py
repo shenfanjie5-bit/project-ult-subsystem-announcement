@@ -98,6 +98,64 @@ def test_process_envelope_records_submit_rejection_as_failed_trace(
     assert run.trace_path.exists()
 
 
+def test_process_envelope_skips_reextracted_duplicate_with_file_backed_idempotency(
+    tmp_path: Path,
+) -> None:
+    envelope = _fixture_envelope()
+    subsystem = RecordingSubsystem()
+    config = _config(tmp_path)
+    parsed_artifact = make_artifact(
+        "证券代码：600000\n证券简称：测试公司\n"
+        "公司预计2026年净利润同比增长50%，本公告为业绩预告。",
+        announcement_id=envelope.announcement_id,
+    )
+    extraction_times = [
+        datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 18, 10, 1, tzinfo=timezone.utc),
+    ]
+
+    def parse_same_artifact(
+        _document: AnnouncementDocumentArtifact,
+        _config: AnnouncementConfig,
+    ) -> ParsedAnnouncementArtifact:
+        return parsed_artifact
+
+    def extract_with_replay_timestamp(artifact: ParsedAnnouncementArtifact) -> Any:
+        assert artifact is parsed_artifact
+        timestamp = extraction_times.pop(0)
+        return [
+            candidate.model_copy(update={"extracted_at": timestamp})
+            for candidate in extract_fact_candidates(artifact)
+        ]
+
+    first_pipeline = AnnouncementPipeline(
+        config,
+        subsystem=subsystem,  # type: ignore[arg-type]
+        discovery_func=_fake_discovery,
+        parse_func=parse_same_artifact,
+        extract_func=extract_with_replay_timestamp,
+    )
+    second_pipeline = AnnouncementPipeline(
+        config,
+        subsystem=subsystem,  # type: ignore[arg-type]
+        discovery_func=_fake_discovery,
+        parse_func=parse_same_artifact,
+        extract_func=extract_with_replay_timestamp,
+    )
+
+    first_run = asyncio.run(first_pipeline.process_envelope(envelope))
+    second_run = asyncio.run(second_pipeline.process_envelope(envelope))
+
+    assert first_run.candidate_count >= 1
+    assert first_run.submit_success_count == first_run.candidate_count
+    assert second_run.candidate_count == first_run.candidate_count
+    assert second_run.submit_success_count == 0
+    assert second_run.submit_duplicate_count == second_run.candidate_count
+    assert second_run.submit_failure_count == 0
+    assert len(subsystem.submissions) == first_run.candidate_count
+    assert all(trace.status == "duplicate" for trace in second_run.candidate_traces)
+
+
 def _fixture_envelope() -> AnnouncementEnvelope:
     path = ROOT / "tests" / "fixtures" / "announcements" / "earnings_envelope.json"
     return AnnouncementEnvelope.model_validate_json(path.read_text(encoding="utf-8"))
