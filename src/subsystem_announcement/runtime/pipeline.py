@@ -44,9 +44,16 @@ from .submit import (
     CandidatePayload,
     SubmitBatchResult,
     SubmitIdempotencyStore,
+    candidate_id_for,
+    ex_type_for,
     submit_candidates,
 )
-from .trace import AnnouncementExtractionRun, RunTraceError, TraceStore
+from .trace import (
+    AnnouncementExtractionRun,
+    CandidateSubmitTrace,
+    RunTraceError,
+    TraceStore,
+)
 
 
 DiscoveryFunc = Callable[
@@ -117,12 +124,13 @@ class AnnouncementPipeline:
             facts = list(await self._call_extract(parsed_artifact))
             signals = list(await self._call_signals(facts))
             graph_deltas = list(await self._call_graph(facts))
-            candidates: list[CandidatePayload] = [*facts, *signals, *graph_deltas]
-            run.candidate_count = len(candidates)
+            downstream_candidates: list[CandidatePayload] = [*signals, *graph_deltas]
+            run.candidate_count = len(facts) + len(downstream_candidates)
 
-            if candidates:
-                submit_result = submit_candidates(
-                    candidates,
+            if run.candidate_count:
+                submit_result = _submit_candidate_phases(
+                    facts,
+                    downstream_candidates,
                     self._get_subsystem(),
                     idempotency_store=self._idempotency_store,
                 )
@@ -133,7 +141,10 @@ class AnnouncementPipeline:
                     failed=0,
                 )
             _apply_submit_result(run, submit_result)
-            run.status = _status_from_submit_result(submit_result, len(candidates))
+            run.status = _status_from_submit_result(
+                submit_result,
+                run.candidate_count,
+            )
         except Exception as exc:
             run.status = "failed"
             run.errors.append(
@@ -279,6 +290,114 @@ def _accepts_keyword(func: Callable[..., Any], name: str) -> bool:
         inspect.Parameter.KEYWORD_ONLY,
         inspect.Parameter.POSITIONAL_OR_KEYWORD,
     }
+
+
+def _submit_candidate_phases(
+    facts: Sequence[AnnouncementFactCandidate],
+    downstream_candidates: Sequence[CandidatePayload],
+    subsystem: AnnouncementSubsystem,
+    *,
+    idempotency_store: SubmitIdempotencyStore,
+) -> SubmitBatchResult:
+    """Submit Ex-1 first, then gate Ex-2/Ex-3 on accepted Ex-1 ids."""
+
+    results: list[SubmitBatchResult] = []
+    if facts:
+        fact_result = submit_candidates(
+            facts,
+            subsystem,
+            idempotency_store=idempotency_store,
+        )
+        results.append(fact_result)
+    else:
+        fact_result = SubmitBatchResult(submitted=0, skipped_duplicates=0, failed=0)
+
+    accepted_fact_ids = _accepted_fact_ids(fact_result)
+    for candidate in downstream_candidates:
+        missing_fact_ids = _missing_source_fact_ids(candidate, accepted_fact_ids)
+        if missing_fact_ids:
+            results.append(_failed_dependency_result(candidate, missing_fact_ids))
+            continue
+        results.append(
+            submit_candidates(
+                [candidate],
+                subsystem,
+                idempotency_store=idempotency_store,
+            )
+        )
+
+    return _merge_submit_results(results)
+
+
+def _accepted_fact_ids(result: SubmitBatchResult) -> set[str]:
+    return {
+        trace.candidate_id or trace.fact_id
+        for trace in result.traces
+        if trace.ex_type == "Ex-1" and trace.status in {"accepted", "duplicate"}
+    }
+
+
+def _missing_source_fact_ids(
+    candidate: CandidatePayload,
+    accepted_fact_ids: set[str],
+) -> tuple[str, ...]:
+    source_fact_ids = getattr(candidate, "source_fact_ids", ())
+    return tuple(
+        fact_id
+        for fact_id in source_fact_ids
+        if fact_id not in accepted_fact_ids
+    )
+
+
+def _failed_dependency_result(
+    candidate: CandidatePayload,
+    missing_fact_ids: Sequence[str],
+) -> SubmitBatchResult:
+    candidate_id = candidate_id_for(candidate)
+    ex_type = ex_type_for(candidate)
+    trace = CandidateSubmitTrace(
+        fact_id=candidate_id,
+        candidate_id=candidate_id,
+        ex_type=ex_type,
+        status="failed",
+        attempts=0,
+        errors=[
+            f"skipped {ex_type} candidate because source_fact_ids are not "
+            f"accepted Ex-1 facts: {', '.join(missing_fact_ids)}"
+        ],
+    )
+    return SubmitBatchResult(
+        submitted=0,
+        skipped_duplicates=0,
+        failed=1,
+        failures=[trace],
+        traces=[trace],
+    )
+
+
+def _merge_submit_results(
+    results: Sequence[SubmitBatchResult],
+) -> SubmitBatchResult:
+    return SubmitBatchResult(
+        submitted=sum(result.submitted for result in results),
+        skipped_duplicates=sum(result.skipped_duplicates for result in results),
+        failed=sum(result.failed for result in results),
+        receipts=[
+            receipt
+            for result in results
+            for receipt in result.receipts
+        ],
+        failures=[
+            failure
+            for result in results
+            for failure in result.failures
+        ],
+        traces=[
+            trace
+            for result in results
+            for trace in result.traces
+        ],
+    )
 
 
 def _apply_submit_result(

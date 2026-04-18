@@ -38,13 +38,36 @@ class RecordingSubsystem:
         }
 
 
+class RejectFactsAcceptDependentsSubsystem:
+    def __init__(self) -> None:
+        self.submissions: list[dict[str, Any]] = []
+
+    def submit(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        self.submissions.append(candidate)
+        if candidate["ex_type"] == "Ex-1":
+            return {
+                "accepted": False,
+                "receipt_id": f"rejected-{len(self.submissions)}",
+                "warnings": (),
+                "errors": ("fact rejected",),
+            }
+        return {
+            "accepted": True,
+            "receipt_id": f"accepted-{len(self.submissions)}",
+            "warnings": (),
+            "errors": (),
+        }
+
+
 def test_pipeline_generates_graph_after_signals_and_submits_ex3_last(
     tmp_path: Path,
 ) -> None:
     subsystem = RecordingSubsystem()
     calls: list[str] = []
 
-    def extract_func(artifact: ParsedAnnouncementArtifact) -> list[AnnouncementFactCandidate]:
+    def extract_func(
+        artifact: ParsedAnnouncementArtifact,
+    ) -> list[AnnouncementFactCandidate]:
         calls.append("extract")
         return [_major_contract_fact(artifact.announcement_id)]
 
@@ -94,6 +117,64 @@ def test_pipeline_generates_graph_after_signals_and_submits_ex3_last(
         "Ex-2",
         "Ex-3",
     ]
+
+
+def test_pipeline_skips_ex2_ex3_when_source_ex1_is_rejected(
+    tmp_path: Path,
+) -> None:
+    subsystem = RejectFactsAcceptDependentsSubsystem()
+
+    def extract_func(
+        artifact: ParsedAnnouncementArtifact,
+    ) -> list[AnnouncementFactCandidate]:
+        return [_major_contract_fact(artifact.announcement_id)]
+
+    def signal_func(facts: list[AnnouncementFactCandidate]):
+        return derive_signal_candidates(facts, generated_at=GENERATED_AT)
+
+    def graph_func(facts: list[AnnouncementFactCandidate]):
+        return derive_graph_delta_candidates(facts, generated_at=GENERATED_AT)
+
+    pipeline = AnnouncementPipeline(
+        _config(tmp_path),
+        subsystem=subsystem,  # type: ignore[arg-type]
+        discovery_func=_fake_discovery,
+        parse_func=_fake_parse,
+        extract_func=extract_func,
+        signal_func=signal_func,
+        graph_func=graph_func,
+    )
+
+    run = asyncio.run(pipeline.process_envelope(_envelope()))
+
+    assert run.status == "failed"
+    assert run.candidate_count == 3
+    assert run.submit_success_count == 0
+    assert run.submit_failure_count == 3
+    assert [payload["ex_type"] for payload in subsystem.submissions] == [
+        "Ex-1",
+        "Ex-1",
+        "Ex-1",
+    ]
+    assert [trace.ex_type for trace in run.candidate_traces] == [
+        "Ex-1",
+        "Ex-2",
+        "Ex-3",
+    ]
+    assert [trace.status for trace in run.candidate_traces] == [
+        "failed",
+        "failed",
+        "failed",
+    ]
+    assert run.candidate_traces[0].attempts == 3
+    assert run.candidate_traces[1].attempts == 0
+    assert run.candidate_traces[2].attempts == 0
+    assert "source_fact_ids are not accepted Ex-1 facts" in (
+        run.candidate_traces[1].errors[0]
+    )
+    assert "source_fact_ids are not accepted Ex-1 facts" in (
+        run.candidate_traces[2].errors[0]
+    )
 
 
 def test_ex3_idempotency_is_isolated_from_ex1_and_ex2_candidate_ids() -> None:

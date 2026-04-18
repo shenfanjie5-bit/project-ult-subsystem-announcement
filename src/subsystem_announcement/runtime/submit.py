@@ -246,12 +246,15 @@ def submit_candidates(
     idempotency_store: SubmitIdempotencyStore | None = None,
     max_attempts: int = 3,
 ) -> SubmitBatchResult:
-    """Submit Ex candidates in order with retry and idempotency."""
+    """Submit Ex candidates with retry, idempotency, and same-batch Ex gating."""
 
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
 
     store = idempotency_store or SubmitIdempotencyStore()
+    fact_candidates, downstream_candidates = _partition_candidate_phases(candidates)
+    batch_fact_ids = _batch_fact_ids(fact_candidates)
+    accepted_fact_ids: set[str] = set()
     submitted = 0
     skipped_duplicates = 0
     failed = 0
@@ -259,7 +262,9 @@ def submit_candidates(
     failures: list[CandidateSubmitTrace] = []
     traces: list[CandidateSubmitTrace] = []
 
-    for candidate in candidates:
+    def process_candidate(candidate: CandidatePayload) -> CandidateSubmitTrace:
+        nonlocal failed, skipped_duplicates, submitted
+
         try:
             payload = _validated_payload(candidate)
             payload_hash = _payload_hash(payload)
@@ -279,7 +284,23 @@ def submit_candidates(
             )
             failures.append(trace)
             traces.append(trace)
-            continue
+            return trace
+
+        missing_fact_ids = _missing_unaccepted_batch_fact_ids(
+            payload,
+            accepted_fact_ids=accepted_fact_ids,
+            batch_fact_ids=batch_fact_ids,
+        )
+        if ex_type in {"Ex-2", "Ex-3"} and missing_fact_ids:
+            failed += 1
+            trace = _dependency_failure_trace(
+                candidate_id,
+                ex_type,
+                missing_fact_ids,
+            )
+            failures.append(trace)
+            traces.append(trace)
+            return trace
 
         with store.locked():
             previous_receipt = store._seen_loaded(ex_type, candidate_id, payload_hash)
@@ -296,7 +317,7 @@ def submit_candidates(
                 )
                 receipts.append(previous_receipt)
                 traces.append(trace)
-                continue
+                return trace
 
             receipt, trace = _submit_one(
                 candidate_id,
@@ -310,7 +331,7 @@ def submit_candidates(
             if receipt is None:
                 failed += 1
                 failures.append(trace)
-                continue
+                return trace
 
             submitted += 1
             try:
@@ -334,6 +355,15 @@ def submit_candidates(
                 ] = receipt
                 traces[-1] = trace
             receipts.append(receipt)
+            return trace
+
+    for candidate in fact_candidates:
+        trace = process_candidate(candidate)
+        if trace.ex_type == "Ex-1" and trace.status in {"accepted", "duplicate"}:
+            accepted_fact_ids.add(trace.candidate_id or trace.fact_id)
+
+    for candidate in downstream_candidates:
+        process_candidate(candidate)
 
     return SubmitBatchResult(
         submitted=submitted,
@@ -342,6 +372,69 @@ def submit_candidates(
         receipts=receipts,
         failures=failures,
         traces=traces,
+    )
+
+
+def _partition_candidate_phases(
+    candidates: Sequence[CandidatePayload],
+) -> tuple[list[CandidatePayload], list[CandidatePayload]]:
+    fact_candidates: list[CandidatePayload] = []
+    downstream_candidates: list[CandidatePayload] = []
+    for candidate in candidates:
+        if _best_effort_ex_type(candidate) == "Ex-1":
+            fact_candidates.append(candidate)
+        else:
+            downstream_candidates.append(candidate)
+    return fact_candidates, downstream_candidates
+
+
+def _batch_fact_ids(candidates: Sequence[CandidatePayload]) -> set[str]:
+    fact_ids: set[str] = set()
+    for candidate in candidates:
+        fact_id = getattr(candidate, "fact_id", None)
+        if isinstance(fact_id, str) and fact_id:
+            fact_ids.add(fact_id)
+    return fact_ids
+
+
+def _missing_unaccepted_batch_fact_ids(
+    payload: Mapping[str, Any],
+    *,
+    accepted_fact_ids: set[str],
+    batch_fact_ids: set[str],
+) -> tuple[str, ...]:
+    source_fact_ids = payload.get("source_fact_ids")
+    if not isinstance(source_fact_ids, Sequence) or isinstance(
+        source_fact_ids,
+        str | bytes | bytearray,
+    ):
+        return ()
+    return tuple(
+        fact_id
+        for fact_id in source_fact_ids
+        if (
+            isinstance(fact_id, str)
+            and fact_id in batch_fact_ids
+            and fact_id not in accepted_fact_ids
+        )
+    )
+
+
+def _dependency_failure_trace(
+    candidate_id: str,
+    ex_type: ExType,
+    missing_fact_ids: Sequence[str],
+) -> CandidateSubmitTrace:
+    return CandidateSubmitTrace(
+        fact_id=candidate_id,
+        candidate_id=candidate_id,
+        ex_type=ex_type,
+        status="failed",
+        attempts=0,
+        errors=[
+            f"skipped {ex_type} candidate because source_fact_ids are not "
+            f"accepted Ex-1 facts in this submission: {', '.join(missing_fact_ids)}"
+        ],
     )
 
 
