@@ -155,8 +155,12 @@ async def replay_announcement(
         trace_store=trace_store,
     )
     run = await pipeline.process_envelope(envelope)
-    retrieval_artifact_path = None
-    if request.rebuild_index and run.parsed_artifact_path is not None:
+    retrieval_artifact_path = run.retrieval_artifact_path
+    if (
+        request.rebuild_index
+        and retrieval_artifact_path is None
+        and run.parsed_artifact_path is not None
+    ):
         retrieval_artifact_path = await _rebuild_index(
             run.parsed_artifact_path,
             config=config,
