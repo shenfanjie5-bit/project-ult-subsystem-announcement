@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DEFAULT_CONFIG_PATH = Path("config/announcement.toml")
+_DOCLING_VERSION = re.compile(r"^docling==[A-Za-z0-9][A-Za-z0-9._!+-]*$")
+_LLAMA_INDEX_VERSION = re.compile(
+    r"^llama-index(?:-core)?==[A-Za-z0-9][A-Za-z0-9._!+-]*$"
+)
 
 
 class AnnouncementConfig(BaseModel):
@@ -25,6 +30,28 @@ class AnnouncementConfig(BaseModel):
     sdk_endpoint: str | None = None
     heartbeat_interval_seconds: int = Field(60, gt=0, le=86_400)
     registration_ttl_seconds: int = Field(900, gt=0, le=604_800)
+
+    @field_validator("docling_version")
+    @classmethod
+    def validate_docling_version(cls, value: str) -> str:
+        """Allow only explicit Docling pins or the unset scaffold sentinel."""
+
+        return _validate_version_field(
+            value,
+            pattern=_DOCLING_VERSION,
+            field_name="docling_version",
+        )
+
+    @field_validator("llama_index_version")
+    @classmethod
+    def validate_llama_index_version(cls, value: str) -> str:
+        """Allow only explicit LlamaIndex pins or the unset scaffold sentinel."""
+
+        return _validate_version_field(
+            value,
+            pattern=_LLAMA_INDEX_VERSION,
+            field_name="llama_index_version",
+        )
 
 
 def load_config(path: Path | None = None) -> AnnouncementConfig:
@@ -49,3 +76,15 @@ def load_config(path: Path | None = None) -> AnnouncementConfig:
 
     raw_config: dict[str, Any] = tomllib.loads(config_text)
     return AnnouncementConfig.model_validate(raw_config)
+
+
+def _validate_version_field(
+    value: str,
+    *,
+    pattern: re.Pattern[str],
+    field_name: str,
+) -> str:
+    stripped = value.strip()
+    if stripped == "not-configured" or pattern.fullmatch(stripped):
+        return stripped
+    raise ValueError(f"{field_name} must be not-configured or an exact package pin")

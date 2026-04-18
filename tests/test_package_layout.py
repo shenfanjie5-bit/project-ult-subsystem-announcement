@@ -52,6 +52,13 @@ def test_subpackages_are_importable(subpackage: str) -> None:
             "AnnouncementEnvelope",
             "consume_announcement_ref",
         }
+    elif subpackage == "parse":
+        assert {
+            "AnnouncementSection",
+            "AnnouncementTable",
+            "ParsedAnnouncementArtifact",
+            "parse_announcement",
+        }.issubset(set(module.__all__))
     else:
         assert module.__all__ == []
 
@@ -74,6 +81,14 @@ def test_load_config_rejects_invalid_fields(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError):
         load_config(config_path)
+
+
+def test_config_rejects_unpinned_parser_and_index_versions() -> None:
+    with pytest.raises(ValidationError, match="docling_version"):
+        AnnouncementConfig(docling_version="docling>=2")
+
+    with pytest.raises(ValidationError, match="llama_index_version"):
+        AnnouncementConfig(llama_index_version="llama-index>=0.11")
 
 
 def test_cli_version_returns_package_version() -> None:
@@ -101,7 +116,9 @@ def test_cli_doctor_loads_default_config() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.strip() == "ok"
+    assert "ok" in result.stdout.splitlines()
+    assert "parser_version=not-configured (unset)" in result.stdout.splitlines()
+    assert "index_version=not-configured (unset)" in result.stdout.splitlines()
 
 
 def test_configure_logging_is_idempotent() -> None:

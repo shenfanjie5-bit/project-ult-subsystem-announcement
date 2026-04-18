@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import load_config
+from .config import AnnouncementConfig, load_config
 from .logging_setup import configure_logging
 
 try:
@@ -37,11 +37,11 @@ if typer is not None:
         """Validate that configuration can be loaded."""
 
         try:
-            load_config(config)
+            runtime_config = load_config(config)
         except Exception as exc:
             typer.echo(f"doctor failed: {exc}", err=True)
             raise typer.Exit(code=1) from exc
-        typer.echo("ok")
+        typer.echo(_doctor_report(runtime_config))
 
     @app.command("ping")
     def ping_command(
@@ -105,11 +105,11 @@ def _fallback_main(argv: list[str]) -> int:
         if len(argv) in {2, 3} and argv[1] in {"--config", "-c"}:
             config_path = Path(argv[2]) if len(argv) == 3 else None
         try:
-            load_config(config_path)
+            runtime_config = load_config(config_path)
         except Exception as exc:
             print(f"doctor failed: {exc}", file=sys.stderr)
             return 1
-        print("ok")
+        print(_doctor_report(runtime_config))
         return 0
     if command in {"ping", "run"}:
         once = command == "ping" or "--once" in argv
@@ -161,6 +161,22 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
     return 0
+
+
+def _doctor_report(config: AnnouncementConfig) -> str:
+    return "\n".join(
+        [
+            "ok",
+            f"parser_version={_version_status(config.docling_version)}",
+            f"index_version={_version_status(config.llama_index_version)}",
+        ]
+    )
+
+
+def _version_status(value: str) -> str:
+    if value == "not-configured":
+        return "not-configured (unset)"
+    return value
 
 
 if __name__ == "__main__":
