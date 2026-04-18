@@ -61,6 +61,9 @@ def test_document_cache_put_writes_bytes_and_round_trips_metadata(
     assert cache.load(artifact.local_path) == artifact
     assert artifact.byte_size == len(b"pdf bytes")
     assert artifact.content_type == "application/pdf"
+    assert artifact.ts_code == "600000.SH"
+    assert artifact.title == "重大合同公告"
+    assert artifact.publish_time == _envelope().publish_time
 
 
 def test_dedupe_store_finds_recorded_artifact_by_id_and_hash(

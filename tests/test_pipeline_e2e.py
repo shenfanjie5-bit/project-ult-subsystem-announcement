@@ -170,6 +170,9 @@ async def _fake_discovery(
     document_path.write_bytes(b"%PDF mocked fixture")
     document = AnnouncementDocumentArtifact(
         announcement_id=envelope.announcement_id,
+        ts_code=envelope.ts_code,
+        title=envelope.title,
+        publish_time=envelope.publish_time,
         content_hash="b" * 64,
         official_url=envelope.official_url,
         source_exchange=envelope.source_exchange,

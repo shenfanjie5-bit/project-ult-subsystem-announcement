@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -86,6 +87,26 @@ def test_unresolved_primary_entity_is_retained_without_guessing() -> None:
     assert fact.fact_content["primary_entity"]["unresolved_ref"].startswith(
         "unresolved:"
     )
+
+
+def test_envelope_ts_code_anchors_primary_entity_when_body_has_no_code() -> None:
+    publish_time = datetime(2026, 4, 18, 9, 30, tzinfo=timezone.utc)
+    artifact = make_artifact(
+        "公司预计2026年净利润同比增长50%，本公告为业绩预告。",
+        announcement_id="ann-envelope-code",
+        source_ts_code="600519.SH",
+        source_title="贵州茅台业绩预告",
+        source_publish_time=publish_time,
+        source_exchange="sse",
+    )
+
+    fact = extract_fact_candidates(artifact)[0]
+
+    assert fact.primary_entity_id == "ts_code:600519.SH"
+    assert fact.fact_content["primary_entity"]["resolution_method"] == "ts_code"
+    assert fact.source_reference["ts_code"] == "600519.SH"
+    assert fact.source_reference["title"] == "贵州茅台业绩预告"
+    assert fact.source_reference["publish_time"] == publish_time.isoformat()
 
 
 class RecordingReasoner:

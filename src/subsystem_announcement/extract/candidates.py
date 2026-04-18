@@ -117,17 +117,25 @@ def build_source_reference(
 ) -> dict[str, Any]:
     """Build official-source reference without local filesystem metadata."""
 
-    official_url = str(parsed_artifact.source_document.official_url).strip()
+    source_document = parsed_artifact.source_document
+    official_url = str(source_document.official_url).strip()
     if not official_url:
         raise ValueError("official source reference is required")
-    return {
+    source_reference = {
         "announcement_id": parsed_artifact.announcement_id,
         "official_url": official_url,
-        "source_exchange": parsed_artifact.source_document.source_exchange,
-        "attachment_type": parsed_artifact.source_document.attachment_type,
+        "source_exchange": source_document.source_exchange,
+        "attachment_type": source_document.attachment_type,
         "content_hash": parsed_artifact.content_hash,
         "parser_version": parsed_artifact.parser_version,
     }
+    if source_document.ts_code is not None:
+        source_reference["ts_code"] = source_document.ts_code
+    if source_document.title is not None:
+        source_reference["title"] = source_document.title
+    if source_document.publish_time is not None:
+        source_reference["publish_time"] = source_document.publish_time.isoformat()
+    return source_reference
 
 
 def build_fact_candidate(
