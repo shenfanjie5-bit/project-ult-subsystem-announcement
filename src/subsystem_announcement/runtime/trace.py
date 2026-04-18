@@ -52,6 +52,14 @@ class AnnouncementExtractionRun(BaseModel):
     finished_at: datetime | None = None
     document_artifact_path: Path | None = None
     parsed_artifact_path: Path | None = None
+    retrieval_artifact_path: Path | None = None
+    index_build_status: Literal[
+        "not_started",
+        "running",
+        "succeeded",
+        "failed",
+        "pending",
+    ] = "not_started"
     candidate_count: int = Field(default=0, ge=0)
     submit_success_count: int = Field(default=0, ge=0)
     submit_duplicate_count: int = Field(default=0, ge=0)

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import inspect
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from subsystem_announcement.config import AnnouncementConfig
+from subsystem_announcement.discovery import (
+    AnnouncementDiscoveryResult,
+    AnnouncementEnvelope,
+)
+from subsystem_announcement.discovery.document import AnnouncementDocumentArtifact
 from subsystem_announcement.index.retrieval_artifact import (
     AnnouncementRetrievalArtifact,
     build_retrieval_artifact,
@@ -14,7 +19,9 @@ from subsystem_announcement.index.retrieval_artifact import (
     write_retrieval_artifact,
 )
 from subsystem_announcement.index.vector_store import AnnouncementVectorIndexRef
+from subsystem_announcement.parse import ParsedAnnouncementArtifact
 from subsystem_announcement.runtime.pipeline import AnnouncementPipeline
+from subsystem_announcement.runtime.trace import TraceStore
 
 from .test_index_chunker import make_index_artifact
 
@@ -170,7 +177,139 @@ def test_retrieval_artifact_accepts_external_chunk_refs_without_inline_chunks(
     assert artifact.chunks == []
 
 
-def test_pipeline_process_envelope_does_not_build_retrieval_index() -> None:
-    source = inspect.getsource(AnnouncementPipeline.process_envelope)
+def test_pipeline_process_envelope_records_retrieval_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vector_calls: list[list[str]] = []
 
-    assert "build_retrieval_artifact" not in source
+    def fake_build_vector_index(chunks, *, persist_dir, config, embed_model=None):
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        vector_calls.append([chunk.chunk_id for chunk in chunks])
+        return AnnouncementVectorIndexRef(
+            index_ref=str(persist_dir),
+            llama_index_version=config.llama_index_version,
+            chunk_ids=[chunk.chunk_id for chunk in chunks],
+            built_at=datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc),
+        )
+
+    monkeypatch.setattr(
+        "subsystem_announcement.index.vector_store.build_vector_index",
+        fake_build_vector_index,
+    )
+    config = AnnouncementConfig(
+        artifact_root=tmp_path / "artifacts",
+        docling_version="docling==2.15.1",
+        llama_index_version="llama-index-core==0.10.0",
+    )
+    pipeline = AnnouncementPipeline(
+        config,
+        discovery_func=_fake_discovery,
+        parse_func=_fake_parse,
+        extract_func=lambda artifact: [],
+    )
+
+    run = asyncio.run(pipeline.process_envelope(_envelope()))
+
+    assert run.status == "succeeded"
+    assert run.parsed_artifact_path is not None
+    assert run.parsed_artifact_path.exists()
+    assert run.index_build_status == "succeeded"
+    assert run.retrieval_artifact_path == (
+        tmp_path / "artifacts" / "index" / "ann-index-1" / "retrieval_artifact.json"
+    )
+    assert run.retrieval_artifact_path.exists()
+    assert vector_calls
+
+    retrieval_artifact = load_retrieval_artifact(run.retrieval_artifact_path)
+    assert retrieval_artifact.announcement_id == "ann-index-1"
+    assert retrieval_artifact.source_parsed_artifact_path == run.parsed_artifact_path
+    assert retrieval_artifact.chunk_count == 3
+    assert retrieval_artifact.chunk_refs == vector_calls[0]
+
+    assert run.trace_path is not None
+    loaded_trace = TraceStore(config).load(run.trace_path)
+    assert loaded_trace.retrieval_artifact_path == run.retrieval_artifact_path
+    assert loaded_trace.index_build_status == "succeeded"
+
+
+def test_pipeline_marks_retrieval_artifact_pending_when_index_build_is_offline(
+    tmp_path: Path,
+) -> None:
+    config = AnnouncementConfig(
+        artifact_root=tmp_path / "artifacts",
+        docling_version="docling==2.15.1",
+        llama_index_version="llama-index-core==0.10.0",
+    )
+
+    def unavailable_index(*args, **kwargs):
+        raise RuntimeError("LlamaIndex dependency is unavailable")
+
+    pipeline = AnnouncementPipeline(
+        config,
+        discovery_func=_fake_discovery,
+        parse_func=_fake_parse,
+        build_retrieval_func=unavailable_index,
+        extract_func=lambda artifact: [],
+    )
+
+    run = asyncio.run(pipeline.process_envelope(_envelope()))
+
+    assert run.status == "succeeded"
+    assert run.parsed_artifact_path is not None
+    assert run.retrieval_artifact_path is None
+    assert run.index_build_status == "pending"
+    assert run.trace_path is not None
+    loaded_trace = TraceStore(config).load(run.trace_path)
+    assert loaded_trace.index_build_status == "pending"
+    assert loaded_trace.retrieval_artifact_path is None
+
+
+def _envelope() -> AnnouncementEnvelope:
+    return AnnouncementEnvelope(
+        announcement_id="ann-index-1",
+        ts_code="600000.SH",
+        title="重大合同公告",
+        publish_time=datetime(2026, 4, 18, 9, 0, tzinfo=timezone.utc),
+        official_url="https://static.sse.com.cn/disclosure/ann-index-1.pdf",
+        source_exchange="sse",
+        attachment_type="pdf",
+    )
+
+
+async def _fake_discovery(
+    envelope: AnnouncementEnvelope,
+    config: AnnouncementConfig,
+) -> AnnouncementDiscoveryResult:
+    document_path = Path(config.artifact_root) / "documents" / "ann-index-1.pdf"
+    document_path.parent.mkdir(parents=True, exist_ok=True)
+    document_path.write_bytes(b"%PDF mocked fixture")
+    document = AnnouncementDocumentArtifact(
+        announcement_id=envelope.announcement_id,
+        ts_code=envelope.ts_code,
+        title=envelope.title,
+        publish_time=envelope.publish_time,
+        content_hash="b" * 64,
+        official_url=envelope.official_url,
+        source_exchange=envelope.source_exchange,
+        attachment_type=envelope.attachment_type,
+        local_path=document_path,
+        content_type="application/pdf",
+        byte_size=document_path.stat().st_size,
+        fetched_at=datetime(2026, 4, 18, 9, 30, tzinfo=timezone.utc),
+    )
+    return AnnouncementDiscoveryResult(status="fetched", document=document)
+
+
+def _fake_parse(
+    document: AnnouncementDocumentArtifact,
+    config: AnnouncementConfig,
+) -> ParsedAnnouncementArtifact:
+    artifact = make_index_artifact(Path(config.artifact_root))
+    return artifact.model_copy(
+        update={
+            "content_hash": document.content_hash,
+            "parser_version": config.docling_version,
+            "source_document": document,
+        }
+    )
