@@ -81,6 +81,14 @@ def test_subpackages_are_importable(subpackage: str) -> None:
             "SignalTimeHorizon",
             "derive_signal_candidates",
         }.issubset(set(module.__all__))
+    elif subpackage == "graph":
+        assert {
+            "AnnouncementGraphDeltaCandidate",
+            "GraphDeltaGuard",
+            "GraphDeltaType",
+            "GraphRelationType",
+            "derive_graph_delta_candidates",
+        }.issubset(set(module.__all__))
     else:
         assert module.__all__ == []
 

@@ -22,7 +22,7 @@ class CandidateSubmitTrace(BaseModel):
 
     fact_id: str = Field(min_length=1)
     candidate_id: str | None = None
-    ex_type: Literal["Ex-1", "Ex-2"] | None = None
+    ex_type: Literal["Ex-1", "Ex-2", "Ex-3"] | None = None
     status: Literal["accepted", "duplicate", "failed"]
     receipt_id: str | None = None
     attempts: int = Field(ge=0)

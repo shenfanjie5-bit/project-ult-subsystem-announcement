@@ -18,6 +18,7 @@ from subsystem_announcement.discovery.errors import NonOfficialSourceError
 from subsystem_announcement.discovery.fetcher import _validate_official_url_text
 from subsystem_announcement.extract import AnnouncementFactCandidate
 from subsystem_announcement.extract.candidates import FORBIDDEN_PAYLOAD_KEYS
+from subsystem_announcement.graph import AnnouncementGraphDeltaCandidate
 from subsystem_announcement.signals import AnnouncementSignalCandidate
 
 from .sdk_adapter import AnnouncementSubsystem
@@ -39,7 +40,12 @@ _FORBIDDEN_RUNTIME_KEYS = FORBIDDEN_PAYLOAD_KEYS | {
 }
 _VOLATILE_IDEMPOTENCY_PAYLOAD_KEYS = {"extracted_at", "generated_at"}
 
-CandidatePayload: TypeAlias = AnnouncementFactCandidate | AnnouncementSignalCandidate
+CandidatePayload: TypeAlias = (
+    AnnouncementFactCandidate
+    | AnnouncementSignalCandidate
+    | AnnouncementGraphDeltaCandidate
+)
+ExType: TypeAlias = Literal["Ex-1", "Ex-2", "Ex-3"]
 
 
 class CandidateSubmitReceipt(BaseModel):
@@ -51,7 +57,7 @@ class CandidateSubmitReceipt(BaseModel):
     candidate_id: str | None = None
     payload_hash: str = Field(min_length=64, max_length=64)
     receipt_id: str = Field(min_length=1)
-    ex_type: Literal["Ex-1", "Ex-2"] = "Ex-1"
+    ex_type: ExType = "Ex-1"
     attempts: int = Field(ge=1)
     accepted_at: datetime
     warnings: tuple[str, ...] = Field(default_factory=tuple)
@@ -240,7 +246,7 @@ def submit_candidates(
     idempotency_store: SubmitIdempotencyStore | None = None,
     max_attempts: int = 3,
 ) -> SubmitBatchResult:
-    """Submit Ex-1/Ex-2 candidates in order with retry and idempotency."""
+    """Submit Ex candidates in order with retry and idempotency."""
 
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
@@ -341,7 +347,7 @@ def submit_candidates(
 
 def _submit_one(
     candidate_id: str,
-    ex_type: Literal["Ex-1", "Ex-2"],
+    ex_type: ExType,
     payload_hash: str,
     payload: dict[str, Any],
     subsystem: AnnouncementSubsystem,
@@ -413,8 +419,8 @@ def _submit_one(
 def _validated_payload(candidate: CandidatePayload) -> dict[str, Any]:
     payload = candidate.to_ex_payload()
     ex_type = payload.get("ex_type")
-    if ex_type not in {"Ex-1", "Ex-2"}:
-        raise ValueError("submit_candidates only accepts Ex-1/Ex-2 payloads")
+    if ex_type not in {"Ex-1", "Ex-2", "Ex-3"}:
+        raise ValueError("submit_candidates only accepts Ex-1/Ex-2/Ex-3 payloads")
     if not payload.get("evidence_spans"):
         raise ValueError(f"{ex_type} payload requires at least one evidence span")
     source_reference = payload.get("source_reference")
@@ -424,8 +430,10 @@ def _validated_payload(candidate: CandidatePayload) -> dict[str, Any]:
     _reject_forbidden_runtime_keys(payload)
     if ex_type == "Ex-1":
         validated = AnnouncementFactCandidate.model_validate(payload)
-    else:
+    elif ex_type == "Ex-2":
         validated = AnnouncementSignalCandidate.model_validate(payload)
+    else:
+        validated = AnnouncementGraphDeltaCandidate.model_validate(payload)
     return validated.model_dump(mode="json")
 
 
@@ -435,29 +443,31 @@ def candidate_id_for(candidate: CandidatePayload) -> str:
     ex_type = ex_type_for(candidate)
     if ex_type == "Ex-1":
         return candidate.fact_id
-    return candidate.signal_id
+    if ex_type == "Ex-2":
+        return candidate.signal_id
+    return candidate.delta_id
 
 
-def ex_type_for(candidate: CandidatePayload) -> Literal["Ex-1", "Ex-2"]:
+def ex_type_for(candidate: CandidatePayload) -> ExType:
     """Return the candidate Ex type."""
 
     ex_type = getattr(candidate, "ex_type", None)
-    if ex_type not in {"Ex-1", "Ex-2"}:
-        raise ValueError("candidate must be Ex-1 or Ex-2")
+    if ex_type not in {"Ex-1", "Ex-2", "Ex-3"}:
+        raise ValueError("candidate must be Ex-1, Ex-2, or Ex-3")
     return ex_type
 
 
 def _best_effort_candidate_id(candidate: object) -> str:
-    for attribute in ("fact_id", "signal_id"):
+    for attribute in ("fact_id", "signal_id", "delta_id"):
         value = getattr(candidate, attribute, None)
         if isinstance(value, str) and value:
             return value
     return "unknown"
 
 
-def _best_effort_ex_type(candidate: object) -> Literal["Ex-1", "Ex-2"] | None:
+def _best_effort_ex_type(candidate: object) -> ExType | None:
     value = getattr(candidate, "ex_type", None)
-    if value in {"Ex-1", "Ex-2"}:
+    if value in {"Ex-1", "Ex-2", "Ex-3"}:
         return value
     return None
 
