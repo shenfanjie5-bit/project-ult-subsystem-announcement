@@ -158,7 +158,42 @@ def test_build_vector_index_records_configured_embedding_strategy(
     assert len(ref.embedding_strategy.model_fingerprint) == 64
 
 
-def test_build_vector_index_rejects_adapter_without_embedding_identity(
+def test_build_vector_index_accepts_legacy_adapter_identity_attrs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_llama_index(monkeypatch)
+    chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
+    embedding = LegacySemanticEmbedding()
+    adapter_module = types.ModuleType("legacy_identity_embedding_adapter")
+    adapter_module.build_embedding = lambda: embedding
+    monkeypatch.setitem(
+        sys.modules,
+        "legacy_identity_embedding_adapter",
+        adapter_module,
+    )
+    config = AnnouncementConfig(
+        llama_index_version="llama-index-core==0.10.0",
+        retrieval_embedding_adapter="legacy_identity_embedding_adapter:build_embedding",
+    )
+
+    ref = build_vector_index(
+        chunks,
+        persist_dir=tmp_path / "vector-store",
+        config=config,
+    )
+
+    assert ref.embedding_strategy == AnnouncementEmbeddingStrategy(
+        strategy_type="adapter",
+        adapter_ref="legacy_identity_embedding_adapter:build_embedding",
+        model_ref="legacy-semantic",
+        model_version="legacy-fixture-v1",
+        model_dimension=2,
+        model_fingerprint=ref.embedding_strategy.model_fingerprint,
+    )
+
+
+def test_build_vector_index_rejects_adapter_without_stable_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -176,7 +211,7 @@ def test_build_vector_index_rejects_adapter_without_embedding_identity(
         retrieval_embedding_adapter="missing_identity_embedding_adapter:build_embedding",
     )
 
-    with pytest.raises(RuntimeError, match="embedding_identity"):
+    with pytest.raises(RuntimeError, match="stable model/config identity"):
         build_vector_index(
             chunks,
             persist_dir=tmp_path / "vector-store",
@@ -421,6 +456,15 @@ class FakeSemanticEmbedding:
         if "分红" in text:
             return [0.0, 1.0]
         return [0.0, 0.0]
+
+
+class LegacySemanticEmbedding:
+    model_name = "legacy-semantic"
+    version = "legacy-fixture-v1"
+    embed_dim = 2
+
+    def embed(self, text: str) -> list[float]:
+        return FakeSemanticEmbedding().embed(text)
 
 
 def _chunk(chunk_id: str, section_id: str, text: str) -> AnnouncementChunk:

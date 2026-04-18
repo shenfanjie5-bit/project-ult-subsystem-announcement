@@ -1,0 +1,4 @@
+# Resolved Docling/LlamaIndex dependency set used to guard resolver compatibility.
+docling==2.15.1
+docling-core==2.13.1
+llama-index-core==0.10.0

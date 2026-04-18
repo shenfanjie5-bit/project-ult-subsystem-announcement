@@ -18,6 +18,7 @@ from subsystem_announcement.parse.artifact import (
 from subsystem_announcement.parse.errors import ParseNormalizationError
 
 ROOT = Path(__file__).resolve().parents[1]
+RESOLVED_CONSTRAINTS = ROOT / "constraints-resolved.txt"
 
 
 def _document(local_path: Path) -> AnnouncementDocumentArtifact:
@@ -89,6 +90,28 @@ def test_docling_node_parser_dependency_is_not_declared() -> None:
     }
 
 
+def test_docling_llama_index_resolved_constraints_are_compatible() -> None:
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = pyproject["project"]["dependencies"]
+    constraints = _resolved_constraints()
+
+    assert constraints["docling"] == "2.15.1"
+    assert constraints["docling-core"] == "2.13.1"
+    assert constraints["llama-index-core"] == "0.10.0"
+    assert "llama-index-node-parser-docling" not in constraints
+    assert _version_tuple(constraints["docling-core"]) >= (2, 13, 1)
+    assert _version_tuple(constraints["docling-core"]) < (3, 0, 0)
+    assert _direct_dependency_pin(dependencies, "docling") == constraints["docling"]
+    assert (
+        _direct_dependency_pin(dependencies, "llama-index-core")
+        == constraints["llama-index-core"]
+    )
+    assert not any(
+        name.startswith("llama-index-node-parser-docling")
+        for name in constraints
+    )
+
+
 def test_parsed_artifact_round_trips_to_disk(tmp_path: Path) -> None:
     source_path = tmp_path / "ann-1.pdf"
     source_path.write_bytes(b"%PDF fixture")
@@ -139,6 +162,32 @@ def test_parsed_artifact_validates_offsets_and_table_section_ids(
     data["sections"][0]["end_offset"] = len(data["extracted_text"]) + 1
     with pytest.raises(ValidationError, match="section offset"):
         ParsedAnnouncementArtifact.model_validate(data)
+
+
+def _resolved_constraints() -> dict[str, str]:
+    constraints: dict[str, str] = {}
+    for raw_line in RESOLVED_CONSTRAINTS.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, version = line.split("==", 1)
+        constraints[name] = version
+    return constraints
+
+
+def _direct_dependency_pin(dependencies: list[str], package_name: str) -> str:
+    prefix = f"{package_name}=="
+    matching = [
+        dependency.split("==", 1)[1]
+        for dependency in dependencies
+        if dependency.startswith(prefix)
+    ]
+    assert len(matching) == 1
+    return matching[0]
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
 
 
 def test_write_parsed_artifact_rejects_unsafe_announcement_id(tmp_path: Path) -> None:

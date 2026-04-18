@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import json
 import math
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -239,6 +240,12 @@ def _index_from_documents(
 
 
 def _load_llama_index_api() -> _LlamaIndexApi:
+    if sys.modules.get("llama_index") is None and "llama_index" in sys.modules:
+        raise RuntimeError(
+            "LlamaIndex core is required for announcement retrieval indexes. "
+            "Install the exact llama-index-core pin."
+        )
+
     try:
         from llama_index.core import (  # type: ignore[import-not-found]
             Document,
@@ -375,7 +382,7 @@ def _embedding_strategy_from_model(
         else None
     )
     adapter_identity = (
-        _required_adapter_embedding_identity(embedding, adapter_ref)
+        _adapter_embedding_identity(embedding, adapter_ref)
         if strategy_type == "adapter"
         else None
     )
@@ -436,31 +443,68 @@ def _embedding_strategy_type(
     return "test_mock"
 
 
-def _required_adapter_embedding_identity(
+def _adapter_embedding_identity(
     embedding: Any,
     adapter_ref: str | None,
 ) -> dict[str, Any]:
     identity_fn = getattr(embedding, "embedding_identity", None)
-    if not callable(identity_fn):
-        raise RuntimeError(
-            "Retrieval embedding adapter models must expose "
-            "embedding_identity() with stable model/config identity: "
-            f"adapter={adapter_ref!r} model={_model_ref(embedding)!r}."
-        )
-    try:
-        raw_identity = identity_fn()
-    except Exception as exc:
-        raise RuntimeError(
-            "Retrieval embedding adapter embedding_identity() failed: "
-            f"adapter={adapter_ref!r} model={_model_ref(embedding)!r}."
-        ) from exc
-    if not isinstance(raw_identity, Mapping) or not raw_identity:
+    if callable(identity_fn):
+        try:
+            raw_identity = identity_fn()
+        except Exception as exc:
+            raise RuntimeError(
+                "Retrieval embedding adapter embedding_identity() failed: "
+                f"adapter={adapter_ref!r} model={_model_ref(embedding)!r}."
+            ) from exc
+        if isinstance(raw_identity, Mapping) and raw_identity:
+            return _stable_identity_mapping(raw_identity, path="embedding_identity")
+        if raw_identity not in (None, {}):
+            raise RuntimeError(
+                "Retrieval embedding adapter embedding_identity() must return a "
+                "non-empty mapping with stable model/config identity: "
+                f"adapter={adapter_ref!r} model={_model_ref(embedding)!r}."
+            )
+
+    legacy_identity = _legacy_adapter_embedding_identity(embedding)
+    if legacy_identity is not None:
+        return legacy_identity
+
+    if callable(identity_fn):
         raise RuntimeError(
             "Retrieval embedding adapter embedding_identity() must return a "
             "non-empty mapping with stable model/config identity: "
             f"adapter={adapter_ref!r} model={_model_ref(embedding)!r}."
         )
-    return _stable_identity_mapping(raw_identity, path="embedding_identity")
+    raise RuntimeError(
+        "Retrieval embedding adapter models must expose embedding_identity() or "
+        "legacy stable model identity attributes such as model_name/model_id, "
+        "model_version/version, and embed_dim/dimension: "
+        f"adapter={adapter_ref!r} model={_model_ref(embedding)!r}."
+    )
+
+
+def _legacy_adapter_embedding_identity(embedding: Any) -> dict[str, Any] | None:
+    model_ref = _string_identity_attr(
+        embedding,
+        ("model_ref", "model_id", "model_name", "model"),
+    )
+    if model_ref is None:
+        return None
+
+    legacy_identity: dict[str, Any] = {"model_ref": model_ref}
+    model_version = _string_identity_attr(
+        embedding,
+        ("model_version", "version", "revision", "__version__"),
+    )
+    if model_version is not None:
+        legacy_identity["model_version"] = model_version
+    model_dimension = _int_identity_attr(
+        embedding,
+        ("embed_dim", "embedding_dim", "dimensions", "dimension"),
+    )
+    if model_dimension is not None:
+        legacy_identity["model_dimension"] = model_dimension
+    return legacy_identity
 
 
 def _stable_identity_mapping(
