@@ -15,6 +15,10 @@ _DOCLING_VERSION = re.compile(r"^docling==[A-Za-z0-9][A-Za-z0-9._!+-]*$")
 _LLAMA_INDEX_VERSION = re.compile(
     r"^llama-index(?:-core)?==[A-Za-z0-9][A-Za-z0-9._!+-]*$"
 )
+_PYTHON_OBJECT_REF = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:"
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"
+)
 
 
 class AnnouncementConfig(BaseModel):
@@ -25,6 +29,8 @@ class AnnouncementConfig(BaseModel):
     artifact_root: Path = Path("artifacts/announcement")
     docling_version: str = "not-configured"
     llama_index_version: str = "not-configured"
+    retrieval_embedding_adapter: str | None = None
+    allow_test_mock_embeddings: bool = False
     reasoner_endpoint: str | None = None
     entity_registry_endpoint: str | None = None
     sdk_endpoint: str | None = None
@@ -51,6 +57,21 @@ class AnnouncementConfig(BaseModel):
             value,
             pattern=_LLAMA_INDEX_VERSION,
             field_name="llama_index_version",
+        )
+
+    @field_validator("retrieval_embedding_adapter")
+    @classmethod
+    def validate_retrieval_embedding_adapter(cls, value: str | None) -> str | None:
+        """Allow explicit module:object embedding adapter references only."""
+
+        if value is None:
+            return None
+        stripped = value.strip()
+        if _PYTHON_OBJECT_REF.fullmatch(stripped):
+            return stripped
+        raise ValueError(
+            "retrieval_embedding_adapter must be a Python object reference in "
+            "module:attribute form"
         )
 
 

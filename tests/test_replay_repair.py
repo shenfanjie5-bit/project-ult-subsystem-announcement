@@ -17,6 +17,9 @@ from subsystem_announcement.extract import (
     FactType,
 )
 from subsystem_announcement.index import AnnouncementRetrievalArtifact
+from subsystem_announcement.index.retrieval_artifact import (
+    AnnouncementEmbeddingStrategy,
+)
 from subsystem_announcement.parse.artifact import (
     ParsedAnnouncementArtifact,
     load_parsed_artifact,
@@ -426,9 +429,21 @@ def _fake_rebuild_index(
         index_ref=str(Path(config.artifact_root) / "index" / "fake"),
         parser_version=parsed_artifact.parser_version,
         llama_index_version=config.llama_index_version,
+        embedding_strategy=_embedding_strategy(),
         chunk_count=1,
         built_at=_timestamp(),
         source_parsed_artifact_path=parsed_artifact_path,
+    )
+
+
+def _embedding_strategy() -> AnnouncementEmbeddingStrategy:
+    return AnnouncementEmbeddingStrategy(
+        strategy_type="adapter",
+        adapter_ref="tests.fixtures:embedding",
+        model_ref="tests.fixtures.Embedding",
+        model_version="fixture-v1",
+        model_dimension=2,
+        model_fingerprint="fixture-fingerprint",
     )
 
 

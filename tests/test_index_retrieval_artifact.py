@@ -13,6 +13,7 @@ from subsystem_announcement.discovery import (
 )
 from subsystem_announcement.discovery.document import AnnouncementDocumentArtifact
 from subsystem_announcement.index.retrieval_artifact import (
+    AnnouncementEmbeddingStrategy,
     AnnouncementRetrievalArtifact,
     build_retrieval_artifact,
     load_retrieval_artifact,
@@ -37,6 +38,7 @@ def test_retrieval_artifact_builds_and_round_trips(
         return AnnouncementVectorIndexRef(
             index_ref=str(persist_dir),
             llama_index_version=config.llama_index_version,
+            embedding_strategy=_embedding_strategy(),
             chunk_ids=[chunk.chunk_id for chunk in chunks],
             built_at=datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc),
         )
@@ -64,6 +66,7 @@ def test_retrieval_artifact_builds_and_round_trips(
     assert loaded.chunk_count == 3
     assert loaded.chunk_refs == [chunk.chunk_id for chunk in loaded.chunks]
     assert loaded.index_ref == str(tmp_path / "index-output" / "vector_store")
+    assert loaded.embedding_strategy == _embedding_strategy()
 
 
 @pytest.mark.parametrize(
@@ -149,6 +152,7 @@ def test_retrieval_artifact_rejects_inconsistent_chunk_refs(
             index_ref=str(tmp_path / "index"),
             parser_version=parsed_artifact.parser_version,
             llama_index_version="llama-index-core==0.10.0",
+            embedding_strategy=_embedding_strategy(),
             chunk_count=1,
             built_at=datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc),
             source_parsed_artifact_path=None,
@@ -169,6 +173,7 @@ def test_retrieval_artifact_accepts_external_chunk_refs_without_inline_chunks(
         index_ref=str(tmp_path / "index"),
         parser_version="docling==2.15.1",
         llama_index_version="llama-index-core==0.10.0",
+        embedding_strategy=_embedding_strategy(),
         chunk_count=1,
         built_at=datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc),
         source_parsed_artifact_path=None,
@@ -189,6 +194,7 @@ def test_pipeline_process_envelope_records_retrieval_artifact(
         return AnnouncementVectorIndexRef(
             index_ref=str(persist_dir),
             llama_index_version=config.llama_index_version,
+            embedding_strategy=_embedding_strategy(),
             chunk_ids=[chunk.chunk_id for chunk in chunks],
             built_at=datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc),
         )
@@ -274,6 +280,17 @@ def _envelope() -> AnnouncementEnvelope:
         official_url="https://static.sse.com.cn/disclosure/ann-index-1.pdf",
         source_exchange="sse",
         attachment_type="pdf",
+    )
+
+
+def _embedding_strategy() -> AnnouncementEmbeddingStrategy:
+    return AnnouncementEmbeddingStrategy(
+        strategy_type="adapter",
+        adapter_ref="tests.fixtures:embedding",
+        model_ref="tests.fixtures.Embedding",
+        model_version="fixture-v1",
+        model_dimension=2,
+        model_fingerprint="fixture-fingerprint",
     )
 
 
