@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from subsystem_announcement.config import AnnouncementConfig
 from subsystem_announcement.extract import (
@@ -22,10 +22,12 @@ from subsystem_announcement.graph.guard import (
     has_ambiguous_graph_language,
 )
 from subsystem_announcement.graph.rules import classify_graph_delta_intent
+from subsystem_announcement.index import chunk_parsed_artifact
 from subsystem_announcement.parse.artifact import (
     ParsedAnnouncementArtifact,
     load_parsed_artifact,
 )
+from subsystem_announcement.parse.errors import ParseNormalizationError
 
 
 class MetricThresholds(BaseModel):
@@ -105,20 +107,6 @@ def compute_metrics_for_manifest(
             continue
         sample_id = str(raw_sample.get("sample_id") or raw_sample.get("file") or "")
         _validate_manifest_sample(raw_sample, diagnostics)
-        metrics = (
-            raw_sample.get("metrics")
-            if isinstance(raw_sample.get("metrics"), dict)
-            else {}
-        )
-        parse_seconds_max = max(
-            parse_seconds_max,
-            _float_metric(metrics, "parse_seconds", default=0.0),
-        )
-        index_seconds_max = max(
-            index_seconds_max,
-            _float_metric(metrics, "index_seconds", default=0.0),
-        )
-
         if raw_sample.get("expected_success") is False:
             continue
 
@@ -128,14 +116,30 @@ def compute_metrics_for_manifest(
             diagnostics.append(f"{sample_id}: missing fixture_paths.parsed_artifact")
             continue
         try:
+            parse_started = time.perf_counter()
             parsed_artifact = _load_sample_parsed_artifact(
                 parsed_path,
                 sample_key=sample_id,
                 announcement_id=str(raw_sample.get("announcement_id") or ""),
             )
+            parse_seconds_max = max(
+                parse_seconds_max,
+                time.perf_counter() - parse_started,
+            )
         except Exception as exc:
             diagnostics.append(f"{sample_id}: unable to load parsed artifact: {exc}")
             continue
+
+        index_started = time.perf_counter()
+        try:
+            chunk_parsed_artifact(parsed_artifact)
+        except Exception as exc:
+            diagnostics.append(f"{sample_id}: unable to build chunk index: {exc}")
+        else:
+            index_seconds_max = max(
+                index_seconds_max,
+                time.perf_counter() - index_started,
+            )
 
         if _has_official_source(parsed_artifact):
             official_source_count += 1
@@ -147,7 +151,6 @@ def compute_metrics_for_manifest(
         discovery_to_ex1_seconds_max = max(
             discovery_to_ex1_seconds_max,
             time.perf_counter() - started,
-            _float_metric(metrics, "discovery_to_ex1_seconds", default=0.0),
         )
         graph_deltas = derive_graph_delta_candidates(facts)
         ex3_count += len(graph_deltas)
@@ -223,6 +226,8 @@ def compute_metrics_for_manifest(
                 unresolved_ref_count += 1
 
     def _coverage(numerator: int, denominator: int) -> float:
+        # Missing required artifacts are recorded in diagnostics before coverage
+        # is computed, so an empty denominator is not treated as a silent pass.
         return 1.0 if denominator == 0 else numerator / denominator
 
     return MetricsRegressionReport(
@@ -328,7 +333,7 @@ def _load_sample_parsed_artifact(
 ) -> ParsedAnnouncementArtifact:
     try:
         return load_parsed_artifact(path)
-    except Exception:
+    except ParseNormalizationError:
         pass
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -346,7 +351,13 @@ def _load_sample_parsed_artifact(
     for key in candidates:
         value = raw.get(key)
         if isinstance(value, dict):
-            return ParsedAnnouncementArtifact.model_validate(value)
+            try:
+                return ParsedAnnouncementArtifact.model_validate(value)
+            except ValidationError as exc:
+                raise ValueError(
+                    "parsed artifact fixture failed schema validation: "
+                    f"path={path} sample_key={key}"
+                ) from exc
     raise ValueError(
         "parsed artifact fixture does not contain the requested sample: "
         f"path={path} sample_key={sample_key} announcement_id={announcement_id}"
@@ -468,14 +479,6 @@ def _has_unresolved_ref(fact: AnnouncementFactCandidate) -> bool:
 def _is_unresolved_ref(value: str) -> bool:
     lowered = value.strip().lower()
     return lowered == "unresolved" or lowered.startswith("unresolved:")
-
-
-def _float_metric(metrics: dict[str, Any], key: str, *, default: float) -> float:
-    value = metrics.get(key, default)
-    try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
-        return default
 
 
 def _int_field(sample: dict[str, Any], key: str, *, default: int) -> int:

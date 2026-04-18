@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,10 +11,19 @@ from subsystem_announcement.discovery.cache import AnnouncementDocumentCache
 from subsystem_announcement.discovery.dedupe import AnnouncementDedupeStore
 from subsystem_announcement.discovery.document import AnnouncementDocumentArtifact
 from subsystem_announcement.discovery.envelope import AnnouncementEnvelope
-from subsystem_announcement.extract import AnnouncementFactCandidate, EvidenceSpan, FactType
+from subsystem_announcement.extract import (
+    AnnouncementFactCandidate,
+    EvidenceSpan,
+    FactType,
+)
 from subsystem_announcement.index import AnnouncementRetrievalArtifact
-from subsystem_announcement.parse.artifact import ParsedAnnouncementArtifact
+from subsystem_announcement.parse.artifact import (
+    ParsedAnnouncementArtifact,
+    load_parsed_artifact,
+    write_parsed_artifact,
+)
 from subsystem_announcement.runtime.repair import (
+    RepairError,
     RepairReason,
     RepairRequest,
     repair_parsed_artifact,
@@ -26,9 +36,13 @@ from subsystem_announcement.runtime.replay import (
     replay_announcement,
 )
 from subsystem_announcement.runtime.submit import SubmitIdempotencyStore
-from subsystem_announcement.runtime.trace import AnnouncementExtractionRun, RunTraceError, TraceStore
-from subsystem_announcement.signals import derive_signal_candidates
+from subsystem_announcement.runtime.trace import (
+    AnnouncementExtractionRun,
+    RunTraceError,
+    TraceStore,
+)
 from subsystem_announcement.graph import derive_graph_delta_candidates
+from subsystem_announcement.signals import derive_signal_candidates
 
 from .extract_fixtures import make_artifact
 
@@ -226,6 +240,91 @@ def test_repair_docling_version_upgrade_requires_configured_parser_version(
 
     assert result.parser_version == config.docling_version
     assert result.retrieval_artifact_path is None
+    assert "upgrades" in result.parsed_artifact_path.parts
+    latest_pointer = (
+        Path(config.artifact_root)
+        / "parsed"
+        / document.announcement_id
+        / "latest.json"
+    )
+    latest = json.loads(latest_pointer.read_text(encoding="utf-8"))
+    assert latest["parsed_artifact_path"] == str(result.parsed_artifact_path)
+
+
+def test_docling_upgrade_repair_preserves_previous_parse_when_index_fails(
+    tmp_path: Path,
+) -> None:
+    config = AnnouncementConfig(
+        artifact_root=tmp_path,
+        docling_version="docling==2.16.0",
+        llama_index_version="llama-index-core==0.10.0",
+    )
+    document = _cache_document(config, "ANN-REPAIR-003")
+    previous = _fake_parse(document, config).model_copy(
+        update={"parser_version": "docling==2.15.1"}
+    )
+    previous_path = write_parsed_artifact(previous, config.artifact_root)
+
+    def fail_rebuild(
+        parsed_artifact: ParsedAnnouncementArtifact,
+        *,
+        config: AnnouncementConfig,
+        parsed_artifact_path: Path | None = None,
+    ) -> AnnouncementRetrievalArtifact:
+        raise RuntimeError("index rebuild failed")
+
+    try:
+        repair_parsed_artifact(
+            RepairRequest(
+                document_path=document.local_path,
+                reason=RepairReason.DOCLING_VERSION_UPGRADE,
+            ),
+            config,
+            parse_func=_fake_parse,
+            rebuild_index_func=fail_rebuild,
+        )
+    except RuntimeError as exc:
+        assert "index rebuild failed" in str(exc)
+    else:
+        raise AssertionError("failing index rebuild was accepted")
+
+    preserved = load_parsed_artifact(previous_path)
+    assert preserved.parser_version == "docling==2.15.1"
+    assert preserved.extracted_text == previous.extracted_text
+    assert not (previous_path.parent / "latest.json").exists()
+
+
+def test_repair_rejects_conflicting_document_locators(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    traced_document = _cache_document(config, "ANN-REPAIR-004")
+    cache = AnnouncementDocumentCache(config)
+    conflicting_document = cache.put(
+        _envelope("ANN-REPAIR-005"),
+        b"%PDF conflicting repair fixture",
+        content_type="application/pdf",
+    )
+    AnnouncementDedupeStore(config.artifact_root).record(conflicting_document)
+    trace_path = _failed_trace(config, traced_document)
+
+    try:
+        repair_parsed_artifact(
+            RepairRequest(
+                trace_path=trace_path,
+                document_path=conflicting_document.local_path,
+                reason=RepairReason.PARSE_FAILURE,
+            ),
+            config,
+            parse_func=_fake_parse,
+            rebuild_index_func=_fake_rebuild_index,
+        )
+    except RepairError as exc:
+        assert "resolve to different documents" in str(exc)
+        assert traced_document.announcement_id in str(exc)
+        assert conflicting_document.announcement_id in str(exc)
+    else:
+        raise AssertionError("conflicting repair locators were accepted")
 
 
 def _config(tmp_path: Path) -> AnnouncementConfig:
@@ -349,4 +448,3 @@ def _span(quote: str, section_id: str) -> EvidenceSpan:
 
 def _timestamp() -> datetime:
     return datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc)
-

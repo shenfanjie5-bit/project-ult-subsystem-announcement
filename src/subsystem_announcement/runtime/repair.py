@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timezone
 from enum import Enum
+import json
+import re
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -106,7 +109,17 @@ def repair_parsed_artifact(
             f"expected={config.docling_version} actual={parsed_artifact.parser_version}"
         )
 
-    parsed_artifact_path = write_parsed_artifact(parsed_artifact, config.artifact_root)
+    if request.reason is RepairReason.DOCLING_VERSION_UPGRADE:
+        parsed_artifact_path = _write_versioned_upgrade_artifact(
+            parsed_artifact,
+            config,
+        )
+    else:
+        parsed_artifact_path = write_parsed_artifact(
+            parsed_artifact,
+            config.artifact_root,
+        )
+
     retrieval_artifact_path = None
     if request.rebuild_index:
         retrieval_artifact = rebuild_index_func(
@@ -122,12 +135,21 @@ def repair_parsed_artifact(
             output_root,
         )
 
+    repaired_at = datetime.now(timezone.utc)
+    if request.reason is RepairReason.DOCLING_VERSION_UPGRADE:
+        _write_latest_upgrade_pointer(
+            parsed_artifact,
+            parsed_artifact_path,
+            config,
+            repaired_at=repaired_at,
+        )
+
     return RepairResult(
         announcement_id=parsed_artifact.announcement_id,
         parsed_artifact_path=parsed_artifact_path,
         parser_version=parsed_artifact.parser_version,
         retrieval_artifact_path=retrieval_artifact_path,
-        repaired_at=datetime.now(timezone.utc),
+        repaired_at=repaired_at,
     )
 
 
@@ -135,8 +157,14 @@ def _load_document_for_repair(
     request: RepairRequest,
     config: AnnouncementConfig,
 ) -> AnnouncementDocumentArtifact:
+    documents: list[tuple[str, AnnouncementDocumentArtifact]] = []
     if request.document_path is not None:
-        return load_document_artifact(request.document_path)
+        documents.append(
+            (
+                f"document_path={request.document_path}",
+                load_document_artifact(request.document_path),
+            )
+        )
     if request.trace_path is not None:
         run = TraceStore(config).load(request.trace_path)
         if run.document_artifact_path is None:
@@ -144,7 +172,140 @@ def _load_document_for_repair(
                 "Run trace does not include document_artifact_path: "
                 f"trace_path={request.trace_path}"
             )
-        return load_document_artifact(run.document_artifact_path)
-    if request.announcement_id is None:
+        documents.append(
+            (
+                f"trace_path={request.trace_path}",
+                load_document_artifact(run.document_artifact_path),
+            )
+        )
+    if request.announcement_id is not None:
+        documents.append(
+            (
+                f"announcement_id={request.announcement_id}",
+                load_cached_document_for_replay(
+                    request.announcement_id,
+                    config=config,
+                ),
+            )
+        )
+    if not documents:
         raise RepairError("repair request did not include a document locator")
-    return load_cached_document_for_replay(request.announcement_id, config=config)
+
+    expected = documents[0][1]
+    conflicts: list[str] = []
+    for locator, document in documents[1:]:
+        if document.announcement_id != expected.announcement_id:
+            conflicts.append(
+                f"{locator} announcement_id={document.announcement_id!r}"
+            )
+        if document.content_hash != expected.content_hash:
+            conflicts.append(
+                f"{locator} content_hash={document.content_hash!r}"
+            )
+    if conflicts:
+        first_locator, first_document = documents[0]
+        raise RepairError(
+            "Repair request locators resolve to different documents: "
+            f"{first_locator} announcement_id={first_document.announcement_id!r} "
+            f"content_hash={first_document.content_hash!r}; "
+            + "; ".join(conflicts)
+        )
+    return expected
+
+
+def _write_versioned_upgrade_artifact(
+    artifact: ParsedAnnouncementArtifact,
+    config: AnnouncementConfig,
+) -> Path:
+    """Write an immutable Docling-upgrade parse without replacing rollback data."""
+
+    upgrade_root = _upgrade_artifact_root(artifact, config)
+    repair_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    path = upgrade_root / f"{repair_id}-{uuid4().hex}-{artifact.content_hash}.json"
+    _write_json_atomic(path, artifact.model_dump_json(indent=2))
+    return path
+
+
+def _write_latest_upgrade_pointer(
+    artifact: ParsedAnnouncementArtifact,
+    artifact_path: Path,
+    config: AnnouncementConfig,
+    *,
+    repaired_at: datetime,
+) -> Path:
+    announcement_root = _parsed_announcement_root(
+        config,
+        artifact.announcement_id,
+    )
+    pointer_path = announcement_root / "latest.json"
+    payload = {
+        "announcement_id": artifact.announcement_id,
+        "content_hash": artifact.content_hash,
+        "parser_version": artifact.parser_version,
+        "parsed_artifact_path": str(artifact_path),
+        "repaired_at": repaired_at.isoformat(),
+    }
+    _write_json_atomic(pointer_path, _json_dumps(payload))
+    return pointer_path
+
+
+def _upgrade_artifact_root(
+    artifact: ParsedAnnouncementArtifact,
+    config: AnnouncementConfig,
+) -> Path:
+    return (
+        _parsed_announcement_root(config, artifact.announcement_id)
+        / "upgrades"
+        / _safe_path_component(artifact.parser_version, field_name="parser_version")
+    )
+
+
+def _parsed_announcement_root(
+    config: AnnouncementConfig,
+    announcement_id: str,
+) -> Path:
+    root = Path(config.artifact_root) / "parsed"
+    announcement_root = root / _safe_path_component(
+        announcement_id,
+        field_name="announcement_id",
+    )
+    return announcement_root
+
+
+def _write_json_atomic(path: Path, content: str) -> None:
+    target = Path(path)
+    parent = target.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if parent.is_symlink():
+        raise RepairError(f"Repair artifact directory is a symlink: path={parent}")
+    if target.exists() and target.is_symlink():
+        raise RepairError(f"Repair artifact path is a symlink: path={target}")
+    temp_path = parent / f".{target.name}.{uuid4().hex}.tmp"
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        temp_path.replace(target)
+    except OSError as exc:
+        raise RepairError(f"Unable to write repair artifact: path={target}") from exc
+    finally:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+
+
+def _safe_path_component(value: str, *, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or value in {"", ".", ".."}
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+        or Path(value).is_absolute()
+    ):
+        raise RepairError(f"Unsafe {field_name} for repair path: {value!r}")
+    return re.sub(r"[^A-Za-z0-9._=-]+", "_", value)
+
+
+def _json_dumps(payload: dict[str, object]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2)

@@ -69,6 +69,35 @@ def test_metrics_report_satisfies_stage3_thresholds() -> None:
     assert_metrics_within_thresholds(report)
 
 
+def test_metrics_timings_are_measured_not_read_from_manifest(
+    tmp_path: Path,
+) -> None:
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    for sample in manifest["samples"]:
+        sample["metrics"] = {
+            "parse_seconds": 999,
+            "discovery_to_ex1_seconds": 999,
+            "index_seconds": 999,
+        }
+        parsed_fixture = sample.get("fixture_paths", {}).get("parsed_artifact")
+        if parsed_fixture:
+            sample["fixture_paths"]["parsed_artifact"] = str(
+                MANIFEST.parent / parsed_fixture
+            )
+    copied_manifest = tmp_path / "manifest.json"
+    copied_manifest.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    report = compute_metrics_for_manifest(copied_manifest, config=_config())
+
+    assert report.parse_seconds_max < 999
+    assert report.discovery_to_ex1_seconds_max < 999
+    assert report.index_seconds_max < 999
+    assert report.diagnostics == []
+
+
 def test_assert_metrics_checks_all_stage3_thresholds() -> None:
     report = compute_metrics_for_manifest(MANIFEST, config=_config())
     bad_report = report.model_copy(
