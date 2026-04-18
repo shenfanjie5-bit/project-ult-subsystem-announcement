@@ -1,0 +1,362 @@
+{
+  "ANN-SAMPLE-001": {
+    "announcement_id": "ANN-SAMPLE-001",
+    "content_hash": "ab163eb3282c9dca8d29a48a906e37f5cba4371d110b14fd34b16a47dca9aaee",
+    "parser_version": "docling==2.15.1",
+    "title_hierarchy": [
+      "浦发银行2026年第一季度业绩预告"
+    ],
+    "sections": [
+      {
+        "section_id": "sec-0001",
+        "title": "浦发银行2026年第一季度业绩预告",
+        "level": 1,
+        "text": "证券代码：600000\n证券简称：浦发银行\n公司预计2026年净利润同比增长50%，本公告为业绩预告。",
+        "start_offset": 0,
+        "end_offset": 51,
+        "parent_id": null
+      }
+    ],
+    "tables": [],
+    "extracted_text": "证券代码：600000\n证券简称：浦发银行\n公司预计2026年净利润同比增长50%，本公告为业绩预告。",
+    "parsed_at": "2026-04-18T09:31:00Z",
+    "source_document": {
+      "announcement_id": "ANN-SAMPLE-001",
+      "ts_code": "600000.SH",
+      "title": "浦发银行2026年第一季度业绩预告",
+      "publish_time": "2026-04-18T09:01:00Z",
+      "content_hash": "ab163eb3282c9dca8d29a48a906e37f5cba4371d110b14fd34b16a47dca9aaee",
+      "official_url": "https://static.sse.com.cn/disclosure/ANN-SAMPLE-001.pdf",
+      "source_exchange": "sse",
+      "attachment_type": "pdf",
+      "local_path": "tests/fixtures/announcements/sse-earnings-preannounce.pdf",
+      "content_type": "application/pdf",
+      "byte_size": 80,
+      "fetched_at": "2026-04-18T09:30:00Z"
+    }
+  },
+  "ANN-SAMPLE-002": {
+    "announcement_id": "ANN-SAMPLE-002",
+    "content_hash": "9f40e3d59b1b5f2d9d91423989d4cc7d0f753f4d91b3308f3ecfa25485880803",
+    "parser_version": "docling==2.15.1",
+    "title_hierarchy": [
+      "包钢股份重大合同公告"
+    ],
+    "sections": [
+      {
+        "section_id": "sec-0001",
+        "title": "包钢股份重大合同公告",
+        "level": 1,
+        "text": "证券代码：600010\n证券简称：包钢股份\n公司与华东能源签订重大合同，合同金额为1000万元。",
+        "start_offset": 0,
+        "end_offset": 48,
+        "parent_id": null
+      }
+    ],
+    "tables": [],
+    "extracted_text": "证券代码：600010\n证券简称：包钢股份\n公司与华东能源签订重大合同，合同金额为1000万元。",
+    "parsed_at": "2026-04-18T09:31:00Z",
+    "source_document": {
+      "announcement_id": "ANN-SAMPLE-002",
+      "ts_code": "600010.SH",
+      "title": "包钢股份重大合同公告",
+      "publish_time": "2026-04-18T09:02:00Z",
+      "content_hash": "9f40e3d59b1b5f2d9d91423989d4cc7d0f753f4d91b3308f3ecfa25485880803",
+      "official_url": "https://static.sse.com.cn/disclosure/ANN-SAMPLE-002.pdf",
+      "source_exchange": "sse",
+      "attachment_type": "pdf",
+      "local_path": "tests/fixtures/announcements/sse-major-contract.pdf",
+      "content_type": "application/pdf",
+      "byte_size": 118,
+      "fetched_at": "2026-04-18T09:30:00Z"
+    }
+  },
+  "ANN-SAMPLE-003": {
+    "announcement_id": "ANN-SAMPLE-003",
+    "content_hash": "b0c86222656e52c5f1594ee3aae5aacd730a026bed46349017e166f94fa966af",
+    "parser_version": "docling==2.15.1",
+    "title_hierarchy": [
+      "平安银行股东权益变动公告"
+    ],
+    "sections": [
+      {
+        "section_id": "sec-0001",
+        "title": "平安银行股东权益变动公告",
+        "level": 1,
+        "text": "证券代码：000001\n证券简称：平安银行\n公司股东甲方持股比例由10%增至12.50%，本次权益变动后持股比例为12.50%。",
+        "start_offset": 0,
+        "end_offset": 64,
+        "parent_id": null
+      }
+    ],
+    "tables": [],
+    "extracted_text": "证券代码：000001\n证券简称：平安银行\n公司股东甲方持股比例由10%增至12.50%，本次权益变动后持股比例为12.50%。",
+    "parsed_at": "2026-04-18T09:31:00Z",
+    "source_document": {
+      "announcement_id": "ANN-SAMPLE-003",
+      "ts_code": "000001.SZ",
+      "title": "平安银行股东权益变动公告",
+      "publish_time": "2026-04-18T09:03:00Z",
+      "content_hash": "b0c86222656e52c5f1594ee3aae5aacd730a026bed46349017e166f94fa966af",
+      "official_url": "https://disc.szse.cn/disclosure/ANN-SAMPLE-003.pdf",
+      "source_exchange": "szse",
+      "attachment_type": "pdf",
+      "local_path": "tests/fixtures/announcements/szse-shareholder-change.pdf",
+      "content_type": "application/pdf",
+      "byte_size": 120,
+      "fetched_at": "2026-04-18T09:30:00Z"
+    }
+  },
+  "ANN-SAMPLE-004": {
+    "announcement_id": "ANN-SAMPLE-004",
+    "content_hash": "a59b74f95d1b129bfcca21e2fa7bc1051220539aa7474d5951e6e05e3e1d3f59",
+    "parser_version": "docling==2.15.1",
+    "title_hierarchy": [
+      "特锐德股权质押公告"
+    ],
+    "sections": [
+      {
+        "section_id": "sec-0001",
+        "title": "特锐德股权质押公告",
+        "level": 1,
+        "text": "证券代码：300001\n证券简称：特锐德\n控股股东甲方办理部分股份质押，质押股份数量为100万股。",
+        "start_offset": 0,
+        "end_offset": 49,
+        "parent_id": null
+      }
+    ],
+    "tables": [],
+    "extracted_text": "证券代码：300001\n证券简称：特锐德\n控股股东甲方办理部分股份质押，质押股份数量为100万股。",
+    "parsed_at": "2026-04-18T09:31:00Z",
+    "source_document": {
+      "announcement_id": "ANN-SAMPLE-004",
+      "ts_code": "300001.SZ",
+      "title": "特锐德股权质押公告",
+      "publish_time": "2026-04-18T09:04:00Z",
+      "content_hash": "a59b74f95d1b129bfcca21e2fa7bc1051220539aa7474d5951e6e05e3e1d3f59",
+      "official_url": "https://www.cninfo.com.cn/disclosure/ANN-SAMPLE-004.html",
+      "source_exchange": "cninfo",
+      "attachment_type": "html",
+      "local_path": "tests/fixtures/announcements/cninfo-equity-pledge.html",
+      "content_type": "text/html",
+      "byte_size": 259,
+      "fetched_at": "2026-04-18T09:30:00Z"
+    }
+  },
+  "ANN-SAMPLE-005": {
+    "announcement_id": "ANN-SAMPLE-005",
+    "content_hash": "2e47adc233bb570622bfd61c335954a894594d1593d99f401ab84614e7f202ba",
+    "parser_version": "docling==2.15.1",
+    "title_hierarchy": [
+      "新和成复牌公告"
+    ],
+    "sections": [
+      {
+        "section_id": "sec-0001",
+        "title": "新和成复牌公告",
+        "level": 1,
+        "text": "证券代码：002001\n证券简称：新和成\n公司股票将于2026年4月20日开市起复牌并恢复交易。",
+        "start_offset": 0,
+        "end_offset": 48,
+        "parent_id": null
+      }
+    ],
+    "tables": [],
+    "extracted_text": "证券代码：002001\n证券简称：新和成\n公司股票将于2026年4月20日开市起复牌并恢复交易。",
+    "parsed_at": "2026-04-18T09:31:00Z",
+    "source_document": {
+      "announcement_id": "ANN-SAMPLE-005",
+      "ts_code": "002001.SZ",
+      "title": "新和成复牌公告",
+      "publish_time": "2026-04-18T09:05:00Z",
+      "content_hash": "2e47adc233bb570622bfd61c335954a894594d1593d99f401ab84614e7f202ba",
+      "official_url": "https://www.cninfo.com.cn/disclosure/ANN-SAMPLE-005.html",
+      "source_exchange": "cninfo",
+      "attachment_type": "html",
+      "local_path": "tests/fixtures/announcements/cninfo-trading-resume.html",
+      "content_type": "text/html",
+      "byte_size": 136,
+      "fetched_at": "2026-04-18T09:30:00Z"
+    }
+  },
+  "ANN-SAMPLE-006": {
+    "announcement_id": "ANN-SAMPLE-006",
+    "content_hash": "5a4f78c239192940ad477bd986422da13d9514a0506c48547b6a650ab1de51c9",
+    "parser_version": "docling==2.15.1",
+    "title_hierarchy": [
+      "北证样本监管措施公告"
+    ],
+    "sections": [
+      {
+        "section_id": "sec-0001",
+        "title": "北证样本监管措施公告",
+        "level": 1,
+        "text": "证券代码：430001\n证券简称：北证样本\n公司收到北京证券交易所出具的监管函，要求公司说明相关事项。",
+        "start_offset": 0,
+        "end_offset": 51,
+        "parent_id": null
+      }
+    ],
+    "tables": [],
+    "extracted_text": "证券代码：430001\n证券简称：北证样本\n公司收到北京证券交易所出具的监管函，要求公司说明相关事项。",
+    "parsed_at": "2026-04-18T09:31:00Z",
+    "source_document": {
+      "announcement_id": "ANN-SAMPLE-006",
+      "ts_code": "430001.BJ",
+      "title": "北证样本监管措施公告",
+      "publish_time": "2026-04-18T09:06:00Z",
+      "content_hash": "5a4f78c239192940ad477bd986422da13d9514a0506c48547b6a650ab1de51c9",
+      "official_url": "https://www.bse.cn/disclosure/ANN-SAMPLE-006.html",
+      "source_exchange": "bse",
+      "attachment_type": "html",
+      "local_path": "tests/fixtures/announcements/bse-regulatory-action.html",
+      "content_type": "text/html",
+      "byte_size": 142,
+      "fetched_at": "2026-04-18T09:30:00Z"
+    }
+  },
+  "ANN-SAMPLE-007": {
+    "announcement_id": "ANN-SAMPLE-007",
+    "content_hash": "a2f4ff454145e97b51f7859e9101e7cb7e216663130ad2d529229c58e9109f99",
+    "parser_version": "docling==2.15.1",
+    "title_hierarchy": [
+      "新三板样本募集资金用途变更公告"
+    ],
+    "sections": [
+      {
+        "section_id": "sec-0001",
+        "title": "新三板样本募集资金用途变更公告",
+        "level": 1,
+        "text": "证券代码：830001\n证券简称：新三板样本\n公司拟变更部分募集资金用途，调整募投项目实施安排。",
+        "start_offset": 0,
+        "end_offset": 48,
+        "parent_id": null
+      }
+    ],
+    "tables": [],
+    "extracted_text": "证券代码：830001\n证券简称：新三板样本\n公司拟变更部分募集资金用途，调整募投项目实施安排。",
+    "parsed_at": "2026-04-18T09:31:00Z",
+    "source_document": {
+      "announcement_id": "ANN-SAMPLE-007",
+      "ts_code": "830001.BJ",
+      "title": "新三板样本募集资金用途变更公告",
+      "publish_time": "2026-04-18T09:07:00Z",
+      "content_hash": "a2f4ff454145e97b51f7859e9101e7cb7e216663130ad2d529229c58e9109f99",
+      "official_url": "https://www.neeq.com.cn/disclosure/ANN-SAMPLE-007.docx",
+      "source_exchange": "neeq",
+      "attachment_type": "word",
+      "local_path": "tests/fixtures/announcements/neeq-fundraising-change.docx",
+      "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "byte_size": 120,
+      "fetched_at": "2026-04-18T09:30:00Z"
+    }
+  },
+  "ANN-SAMPLE-008": {
+    "announcement_id": "ANN-SAMPLE-008",
+    "content_hash": "52f35b429d6c61bc67384480a05e5def40a1b1c8069a94d9fa8358b96f42532c",
+    "parser_version": "docling==2.15.1",
+    "title_hierarchy": [
+      "万科A实际控制人变更公告"
+    ],
+    "sections": [
+      {
+        "section_id": "sec-0001",
+        "title": "万科A实际控制人变更公告",
+        "level": 1,
+        "text": "证券代码：000002\n证券简称：万科A\n公司实际控制人发生变更，控股股东乙方将成为新的实际控制人。",
+        "start_offset": 0,
+        "end_offset": 50,
+        "parent_id": null
+      }
+    ],
+    "tables": [],
+    "extracted_text": "证券代码：000002\n证券简称：万科A\n公司实际控制人发生变更，控股股东乙方将成为新的实际控制人。",
+    "parsed_at": "2026-04-18T09:31:00Z",
+    "source_document": {
+      "announcement_id": "ANN-SAMPLE-008",
+      "ts_code": "000002.SZ",
+      "title": "万科A实际控制人变更公告",
+      "publish_time": "2026-04-18T09:08:00Z",
+      "content_hash": "52f35b429d6c61bc67384480a05e5def40a1b1c8069a94d9fa8358b96f42532c",
+      "official_url": "https://disc.szse.cn/disclosure/ANN-SAMPLE-008.pdf",
+      "source_exchange": "szse",
+      "attachment_type": "word",
+      "local_path": "tests/fixtures/announcements/szse-controller-change.docx",
+      "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "byte_size": 114,
+      "fetched_at": "2026-04-18T09:30:00Z"
+    }
+  },
+  "ANN-SAMPLE-009": {
+    "announcement_id": "ANN-SAMPLE-009",
+    "content_hash": "bdf1112613fd201142f52d36d4437c0f143d1060f308f5deef5407ae94783665",
+    "parser_version": "docling==2.15.1",
+    "title_hierarchy": [
+      "华能国际合作意向公告"
+    ],
+    "sections": [
+      {
+        "section_id": "sec-0001",
+        "title": "华能国际合作意向公告",
+        "level": 1,
+        "text": "证券代码：600011\n证券简称：华能国际\n双方正在洽谈战略合作意向，尚未签署正式协议，未来合作事项存在不确定性。",
+        "start_offset": 0,
+        "end_offset": 57,
+        "parent_id": null
+      }
+    ],
+    "tables": [],
+    "extracted_text": "证券代码：600011\n证券简称：华能国际\n双方正在洽谈战略合作意向，尚未签署正式协议，未来合作事项存在不确定性。",
+    "parsed_at": "2026-04-18T09:31:00Z",
+    "source_document": {
+      "announcement_id": "ANN-SAMPLE-009",
+      "ts_code": "600011.SH",
+      "title": "华能国际合作意向公告",
+      "publish_time": "2026-04-18T09:09:00Z",
+      "content_hash": "bdf1112613fd201142f52d36d4437c0f143d1060f308f5deef5407ae94783665",
+      "official_url": "https://static.sse.com.cn/disclosure/ANN-SAMPLE-009.html",
+      "source_exchange": "sse",
+      "attachment_type": "html",
+      "local_path": "tests/fixtures/announcements/ambiguous-relation.html",
+      "content_type": "text/html",
+      "byte_size": 154,
+      "fetched_at": "2026-04-18T09:30:00Z"
+    }
+  },
+  "ANN-SAMPLE-010": {
+    "announcement_id": "ANN-SAMPLE-010",
+    "content_hash": "bb4ecc96ec5ea6604b706e0d0405198508a38d0147d801259aaa4deb06461ce0",
+    "parser_version": "docling==2.15.1",
+    "title_hierarchy": [
+      "重大合同公告"
+    ],
+    "sections": [
+      {
+        "section_id": "sec-0001",
+        "title": "重大合同公告",
+        "level": 1,
+        "text": "证券代码：600012\n证券简称：皖通高速\n公司董事会审议通过日常经营事项，正文未披露标题所述事项的证据。",
+        "start_offset": 0,
+        "end_offset": 53,
+        "parent_id": null
+      }
+    ],
+    "tables": [],
+    "extracted_text": "证券代码：600012\n证券简称：皖通高速\n公司董事会审议通过日常经营事项，正文未披露标题所述事项的证据。",
+    "parsed_at": "2026-04-18T09:31:00Z",
+    "source_document": {
+      "announcement_id": "ANN-SAMPLE-010",
+      "ts_code": "600012.SH",
+      "title": "重大合同公告",
+      "publish_time": "2026-04-18T09:10:00Z",
+      "content_hash": "bb4ecc96ec5ea6604b706e0d0405198508a38d0147d801259aaa4deb06461ce0",
+      "official_url": "https://static.sse.com.cn/disclosure/ANN-SAMPLE-010.word",
+      "source_exchange": "sse",
+      "attachment_type": "word",
+      "local_path": "tests/fixtures/announcements/sse-cooperation.docx",
+      "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "byte_size": 74,
+      "fetched_at": "2026-04-18T09:30:00Z"
+    }
+  }
+}
