@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -60,7 +61,7 @@ def build_vector_index(
 
     llama_index_version = resolve_llama_index_version(config.llama_index_version)
     api = _load_llama_index_api()
-    embedding = embed_model if embed_model is not None else _default_embed_model()
+    embedding = _resolve_embed_model(config=config, embed_model=embed_model)
     documents = [_document_from_chunk(api.Document, chunk) for chunk in chunks]
     vector_store = api.SimpleVectorStore()
     storage_context = api.StorageContext.from_defaults(vector_store=vector_store)
@@ -90,13 +91,14 @@ def load_vector_index(
     *,
     persist_dir: Path,
     llama_index_version: str,
+    config: AnnouncementConfig | None = None,
     embed_model: Any | None = None,
 ) -> Any:
     """Load a persisted LlamaIndex vector index for retrieval."""
 
     resolve_llama_index_version(llama_index_version)
     api = _load_llama_index_api()
-    embedding = embed_model if embed_model is not None else _default_embed_model()
+    embedding = _resolve_embed_model(config=config, embed_model=embed_model)
     storage_context = api.StorageContext.from_defaults(persist_dir=str(persist_dir))
     try:
         return api.load_index_from_storage(
@@ -251,7 +253,77 @@ def _load_llama_index_api() -> _LlamaIndexApi:
     )
 
 
-def _default_embed_model() -> Any:
+def _resolve_embed_model(
+    *,
+    config: AnnouncementConfig | None,
+    embed_model: Any | None,
+) -> Any:
+    if embed_model is not None:
+        return embed_model
+    if config is not None and config.retrieval_embedding_adapter is not None:
+        return _load_embedding_adapter(config.retrieval_embedding_adapter)
+    if config is not None and config.allow_test_mock_embeddings:
+        return _mock_embed_model()
+    raise RuntimeError(
+        "Retrieval embedding model is not configured. Set "
+        "AnnouncementConfig.retrieval_embedding_adapter to a module:attribute "
+        "adapter, pass embed_model explicitly, or set "
+        "allow_test_mock_embeddings=True only in tests."
+    )
+
+
+def _load_embedding_adapter(adapter_ref: str) -> Any:
+    module_name, object_path = adapter_ref.split(":", 1)
+    try:
+        module = importlib.import_module(module_name)
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "Unable to import retrieval embedding adapter module "
+            f"{module_name!r}."
+        ) from exc
+
+    adapter: Any = module
+    try:
+        for name in object_path.split("."):
+            adapter = getattr(adapter, name)
+    except AttributeError as exc:
+        raise RuntimeError(
+            "Unable to resolve retrieval embedding adapter object "
+            f"{adapter_ref!r}."
+        ) from exc
+
+    if isinstance(adapter, type) or (
+        callable(adapter) and not _looks_like_embedding_model(adapter)
+    ):
+        try:
+            adapter = adapter()
+        except TypeError as exc:
+            raise RuntimeError(
+                "Retrieval embedding adapter factory must be callable without "
+                f"arguments: {adapter_ref!r}."
+            ) from exc
+
+    if adapter is None:
+        raise RuntimeError(
+            "Retrieval embedding adapter resolved to None: "
+            f"{adapter_ref!r}."
+        )
+    return adapter
+
+
+def _looks_like_embedding_model(value: Any) -> bool:
+    return any(
+        hasattr(value, name)
+        for name in (
+            "get_text_embedding",
+            "get_query_embedding",
+            "_get_text_embedding",
+            "_get_query_embedding",
+        )
+    )
+
+
+def _mock_embed_model() -> Any:
     try:
         from llama_index.core.embeddings.mock_embed_model import (  # type: ignore[import-not-found]
             MockEmbedding,

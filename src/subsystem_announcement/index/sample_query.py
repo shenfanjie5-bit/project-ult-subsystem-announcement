@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from subsystem_announcement.config import AnnouncementConfig
+
 from .retrieval_artifact import (
     AnnouncementChunk,
     AnnouncementRetrievalArtifact,
@@ -20,6 +22,7 @@ def query(
     artifact: AnnouncementRetrievalArtifact,
     *,
     top_k: int = 5,
+    config: AnnouncementConfig | None = None,
     embed_model: Any | None = None,
 ) -> list[AnnouncementRetrievalHit]:
     """Query a retrieval artifact and return chunk-level hits only."""
@@ -35,6 +38,7 @@ def query(
     index = load_vector_index(
         persist_dir=Path(artifact.index_ref),
         llama_index_version=artifact.llama_index_version,
+        config=config,
         embed_model=embed_model,
     )
     vector_scores = _vector_scores(index, query_text, top_k=top_k)

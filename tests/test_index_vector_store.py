@@ -11,7 +11,10 @@ import pytest
 import subsystem_announcement.index.vector_store as vector_store
 from subsystem_announcement.config import AnnouncementConfig
 from subsystem_announcement.index import chunk_parsed_artifact
-from subsystem_announcement.index.retrieval_artifact import AnnouncementRetrievalArtifact
+from subsystem_announcement.index.retrieval_artifact import (
+    AnnouncementChunk,
+    AnnouncementRetrievalArtifact,
+)
 from subsystem_announcement.index.sample_query import query
 from subsystem_announcement.index.vector_store import build_vector_index
 
@@ -24,7 +27,10 @@ def test_build_vector_index_persists_simple_vector_store(
 ) -> None:
     installed = _install_fake_llama_index(monkeypatch)
     chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
-    config = AnnouncementConfig(llama_index_version="llama-index-core==0.10.0")
+    config = AnnouncementConfig(
+        llama_index_version="llama-index-core==0.10.0",
+        allow_test_mock_embeddings=True,
+    )
 
     ref = build_vector_index(
         chunks,
@@ -45,7 +51,10 @@ def test_query_returns_section_and_table_keyword_hits(
 ) -> None:
     _install_fake_llama_index(monkeypatch)
     chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
-    config = AnnouncementConfig(llama_index_version="llama-index-core==0.10.0")
+    config = AnnouncementConfig(
+        llama_index_version="llama-index-core==0.10.0",
+        allow_test_mock_embeddings=True,
+    )
     index_ref = build_vector_index(
         chunks,
         persist_dir=tmp_path / "vector-store",
@@ -63,13 +72,101 @@ def test_query_returns_section_and_table_keyword_hits(
         chunks=chunks,
     )
 
-    section_hits = query("风险提示", artifact, top_k=1)
-    table_hits = query("1000万元", artifact, top_k=1)
+    section_hits = query("风险提示", artifact, top_k=1, config=config)
+    table_hits = query("1000万元", artifact, top_k=1, config=config)
 
     assert section_hits[0].section_id == "sec-0002"
     assert section_hits[0].table_ref is None
     assert table_hits[0].table_ref == "tbl-0001"
     assert table_hits[0].metadata["chunk_type"] == "table"
+
+
+def test_build_vector_index_rejects_implicit_mock_embeddings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_llama_index(monkeypatch)
+    chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
+    config = AnnouncementConfig(llama_index_version="llama-index-core==0.10.0")
+
+    with pytest.raises(RuntimeError, match="retrieval_embedding_adapter"):
+        build_vector_index(
+            chunks,
+            persist_dir=tmp_path / "vector-store",
+            config=config,
+        )
+
+
+def test_build_vector_index_uses_configured_embedding_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed = _install_fake_llama_index(monkeypatch)
+    chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
+    embedding = FakeSemanticEmbedding()
+    adapter_module = types.ModuleType("fake_embedding_adapter")
+    adapter_module.build_embedding = lambda: embedding
+    monkeypatch.setitem(sys.modules, "fake_embedding_adapter", adapter_module)
+    config = AnnouncementConfig(
+        llama_index_version="llama-index-core==0.10.0",
+        retrieval_embedding_adapter="fake_embedding_adapter:build_embedding",
+    )
+
+    build_vector_index(
+        chunks,
+        persist_dir=tmp_path / "vector-store",
+        config=config,
+    )
+
+    assert installed["build_embed_models"] == [embedding]
+
+
+def test_query_uses_semantic_vectors_without_exact_word_overlap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_llama_index(monkeypatch)
+    embedding = FakeSemanticEmbedding()
+    config = AnnouncementConfig(llama_index_version="llama-index-core==0.10.0")
+    chunks = [
+        _chunk(
+            "chunk:ann-semantic:sec-0001:section:dividend",
+            "sec-0001",
+            "公司完成现金分红方案实施，权益分派已办理完毕。",
+        ),
+        _chunk(
+            "chunk:ann-semantic:sec-0002:section:inquiry",
+            "sec-0002",
+            "公司收到上海证券交易所监管问询函，将按要求及时回复。",
+        ),
+    ]
+    index_ref = build_vector_index(
+        chunks,
+        persist_dir=tmp_path / "vector-store",
+        config=config,
+        embed_model=embedding,
+    )
+    artifact = AnnouncementRetrievalArtifact(
+        announcement_id="ann-semantic",
+        chunk_refs=[chunk.chunk_id for chunk in chunks],
+        index_ref=index_ref.index_ref,
+        parser_version="docling==2.15.1",
+        llama_index_version=index_ref.llama_index_version,
+        chunk_count=len(chunks),
+        built_at=index_ref.built_at,
+        source_parsed_artifact_path=None,
+        chunks=chunks,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Retrieval embedding model is not configured",
+    ):
+        query("交易所关注函", artifact, top_k=1)
+
+    assert "交易所关注函" not in chunks[1].text
+    hits = query("交易所关注函", artifact, top_k=1, embed_model=embedding)
+    assert hits[0].chunk_id == chunks[1].chunk_id
 
 
 def test_build_vector_index_rejects_unconfigured_llama_index(
@@ -90,7 +187,10 @@ def test_build_vector_index_reports_missing_llama_index_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
-    config = AnnouncementConfig(llama_index_version="llama-index-core==0.10.0")
+    config = AnnouncementConfig(
+        llama_index_version="llama-index-core==0.10.0",
+        allow_test_mock_embeddings=True,
+    )
     monkeypatch.setattr(
         vector_store.metadata,
         "version",
@@ -106,8 +206,36 @@ def test_build_vector_index_reports_missing_llama_index_dependency(
         )
 
 
-def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
-    calls = {"docling_parser_calls": 0}
+class FakeSemanticEmbedding:
+    def embed(self, text: str) -> list[float]:
+        if "交易所关注函" in text or "监管问询函" in text:
+            return [1.0, 0.0]
+        if "分红" in text:
+            return [0.0, 1.0]
+        return [0.0, 0.0]
+
+
+def _chunk(chunk_id: str, section_id: str, text: str) -> AnnouncementChunk:
+    return AnnouncementChunk(
+        chunk_id=chunk_id,
+        announcement_id="ann-semantic",
+        chunk_type="section",
+        section_id=section_id,
+        table_ref=None,
+        text=text,
+        start_offset=0,
+        end_offset=len(text),
+        title_path=["测试公告"],
+        source_reference={"official_url": "https://example.test/ann-semantic.pdf"},
+    )
+
+
+def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    calls: dict[str, Any] = {
+        "docling_parser_calls": 0,
+        "build_embed_models": [],
+        "load_embed_models": [],
+    }
 
     class FakeDocument:
         def __init__(self, *, text: str, metadata: dict[str, Any]) -> None:
@@ -130,6 +258,7 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]
             self.vector_store = vector_store
             self.persist_dir = persist_dir
             self.documents: list[FakeDocument] = []
+            self.embeddings: list[list[float]] = []
             if persist_dir is not None:
                 index_path = Path(persist_dir) / "fake_vector_index.json"
                 data = json.loads(index_path.read_text(encoding="utf-8"))
@@ -137,6 +266,7 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]
                     FakeDocument(text=item["text"], metadata=item["metadata"])
                     for item in data["documents"]
                 ]
+                self.embeddings = data.get("embeddings", [])
 
         @classmethod
         def from_defaults(cls, **kwargs):
@@ -149,7 +279,8 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]
                 "documents": [
                     {"text": document.text, "metadata": document.metadata}
                     for document in self.documents
-                ]
+                ],
+                "embeddings": self.embeddings,
             }
             (output_dir / "fake_vector_index.json").write_text(
                 json.dumps(payload, ensure_ascii=False),
@@ -165,10 +296,18 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]
             self,
             documents: list[FakeDocument],
             storage_context: FakeStorageContext,
+            *,
+            embed_model: Any,
+            embeddings: list[list[float]] | None = None,
         ) -> None:
             self.documents = documents
             self.storage_context = storage_context
             self.storage_context.documents = documents
+            self.embed_model = embed_model
+            self.embeddings = embeddings or [
+                _embed(embed_model, document.text) for document in documents
+            ]
+            self.storage_context.embeddings = self.embeddings
 
         @classmethod
         def from_documents(
@@ -182,17 +321,46 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]
             assert transformations
             assert isinstance(transformations[0], FakeDoclingNodeParser)
             assert embed_model is not None
-            return cls(list(documents), storage_context)
+            calls["build_embed_models"].append(embed_model)
+            return cls(list(documents), storage_context, embed_model=embed_model)
 
         def as_retriever(self, *, similarity_top_k: int):
-            return FakeRetriever(self.documents, similarity_top_k)
+            return FakeRetriever(
+                self.documents,
+                self.embeddings,
+                self.embed_model,
+                similarity_top_k,
+            )
 
     class FakeRetriever:
-        def __init__(self, documents, top_k: int) -> None:
+        def __init__(
+            self,
+            documents,
+            embeddings: list[list[float]],
+            embed_model: Any,
+            top_k: int,
+        ) -> None:
             self.documents = documents
+            self.embeddings = embeddings
+            self.embed_model = embed_model
             self.top_k = top_k
 
         def retrieve(self, text: str):
+            query_embedding = _embed(self.embed_model, text)
+            if query_embedding and any(self.embeddings):
+                ranked_with_scores = sorted(
+                    zip(self.documents, self.embeddings, strict=True),
+                    key=lambda item: _dot(query_embedding, item[1]),
+                    reverse=True,
+                )
+                return [
+                    types.SimpleNamespace(
+                        node=document,
+                        score=_dot(query_embedding, embedding),
+                    )
+                    for document, embedding in ranked_with_scores[: self.top_k]
+                ]
+
             ranked = sorted(
                 self.documents,
                 key=lambda document: text in document.text,
@@ -212,7 +380,13 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]
 
     def fake_load_index_from_storage(storage_context, embed_model=None):
         assert embed_model is not None
-        return FakeVectorStoreIndex(storage_context.documents, storage_context)
+        calls["load_embed_models"].append(embed_model)
+        return FakeVectorStoreIndex(
+            storage_context.documents,
+            storage_context,
+            embed_model=embed_model,
+            embeddings=storage_context.embeddings,
+        )
 
     llama_index_module = types.ModuleType("llama_index")
     llama_index_module.__path__ = []
@@ -259,3 +433,14 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]
         lambda package_name: "0.10.0",
     )
     return calls
+
+
+def _embed(embed_model: Any, text: str) -> list[float]:
+    embed = getattr(embed_model, "embed", None)
+    if embed is None:
+        return []
+    return list(embed(text))
+
+
+def _dot(left: list[float], right: list[float]) -> float:
+    return sum(a * b for a, b in zip(left, right, strict=False))

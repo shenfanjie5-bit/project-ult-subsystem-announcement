@@ -55,6 +55,7 @@ def _build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("--artifact", type=Path, required=True)
     query_parser.add_argument("--text", required=True)
     query_parser.add_argument("--top-k", type=int, default=5)
+    query_parser.add_argument("--config", type=Path, default=None)
     return parser
 
 
@@ -73,8 +74,9 @@ def _build_command(args: argparse.Namespace) -> int:
 
 
 def _query_command(args: argparse.Namespace) -> int:
+    config = _load_cli_config(args.config)
     artifact = load_retrieval_artifact(args.artifact)
-    hits = query(args.text, artifact, top_k=args.top_k)
+    hits = query(args.text, artifact, top_k=args.top_k, config=config)
     print(
         json.dumps(
             [hit.model_dump(mode="json") for hit in hits],
