@@ -65,7 +65,10 @@ def test_process_envelope_discovers_parses_extracts_and_submits_ex1(
     assert run.trace_path is not None
     assert run.trace_path.exists()
     assert subsystem.submissions
-    assert all(payload["ex_type"] == "Ex-1" for payload in subsystem.submissions)
+    assert [payload["ex_type"] for payload in subsystem.submissions] == ["Ex-1", "Ex-2"]
+    assert subsystem.submissions[1]["source_fact_ids"] == [
+        subsystem.submissions[0]["fact_id"]
+    ]
     assert all(payload["evidence_spans"] for payload in subsystem.submissions)
     assert all(
         payload["source_reference"]["official_url"].startswith("https://")
@@ -248,11 +251,10 @@ def test_process_envelope_wires_configured_registry_and_reasoner(
     assert reasoner_payloads
     assert reasoner_payloads[0]["endpoint"] == reasoner_endpoint
     assert registry_calls == [
-        ("lookup_alias", "测试股份", registry_endpoint),
         ("lookup_alias", "银河资本", registry_endpoint),
         ("resolve_mentions", ["银河资本"], registry_endpoint),
     ]
-    assert subsystem.submissions[0]["primary_entity_id"] == "entity-primary"
+    assert subsystem.submissions[0]["primary_entity_id"] == "ts_code:600000.SH"
     assert subsystem.submissions[0]["related_entity_ids"] == ["entity-counterparty"]
     assert (
         subsystem.submissions[0]["fact_content"]["reasoner_fact_content"][

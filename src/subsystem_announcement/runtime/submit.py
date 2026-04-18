@@ -1,4 +1,4 @@
-"""Batch Ex-1 submission through the announcement SDK adapter."""
+"""Batch Ex candidate submission through the announcement SDK adapter."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,6 +18,7 @@ from subsystem_announcement.discovery.errors import NonOfficialSourceError
 from subsystem_announcement.discovery.fetcher import _validate_official_url_text
 from subsystem_announcement.extract import AnnouncementFactCandidate
 from subsystem_announcement.extract.candidates import FORBIDDEN_PAYLOAD_KEYS
+from subsystem_announcement.signals import AnnouncementSignalCandidate
 
 from .sdk_adapter import AnnouncementSubsystem
 from .trace import CandidateSubmitTrace
@@ -36,7 +37,9 @@ _FORBIDDEN_RUNTIME_KEYS = FORBIDDEN_PAYLOAD_KEYS | {
     "document_artifact_path",
     "parsed_artifact_path",
 }
-_VOLATILE_IDEMPOTENCY_PAYLOAD_KEYS = {"extracted_at"}
+_VOLATILE_IDEMPOTENCY_PAYLOAD_KEYS = {"extracted_at", "generated_at"}
+
+CandidatePayload: TypeAlias = AnnouncementFactCandidate | AnnouncementSignalCandidate
 
 
 class CandidateSubmitReceipt(BaseModel):
@@ -45,17 +48,19 @@ class CandidateSubmitReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     fact_id: str = Field(min_length=1)
+    candidate_id: str | None = None
     payload_hash: str = Field(min_length=64, max_length=64)
     receipt_id: str = Field(min_length=1)
-    ex_type: Literal["Ex-1"] = "Ex-1"
+    ex_type: Literal["Ex-1", "Ex-2"] = "Ex-1"
     attempts: int = Field(ge=1)
     accepted_at: datetime
     warnings: tuple[str, ...] = Field(default_factory=tuple)
     errors: tuple[str, ...] = Field(default_factory=tuple)
+    requires_reconciliation: bool = False
 
 
 class SubmitBatchResult(BaseModel):
-    """Summary of an ordered Ex-1 batch submission."""
+    """Summary of an ordered Ex candidate batch submission."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -68,7 +73,7 @@ class SubmitBatchResult(BaseModel):
 
 
 class SubmitIdempotencyStore:
-    """Idempotency records keyed by ``fact_id`` and payload hash."""
+    """Idempotency records keyed by ``ex_type``, candidate id, and payload hash."""
 
     _path_locks: dict[Path, threading.RLock] = {}
     _path_locks_guard = threading.Lock()
@@ -90,22 +95,29 @@ class SubmitIdempotencyStore:
         self,
         candidate_id: str,
         payload_hash: str,
+        ex_type: str = "Ex-1",
     ) -> CandidateSubmitReceipt | None:
         """Return the previous receipt for an identical candidate payload."""
 
         with self.locked():
-            return self._seen_loaded(candidate_id, payload_hash)
+            return self._seen_loaded(ex_type, candidate_id, payload_hash)
 
     def record(
         self,
         candidate_id: str,
         payload_hash: str,
         receipt: CandidateSubmitReceipt,
+        ex_type: str | None = None,
     ) -> None:
         """Record an accepted candidate receipt."""
 
         with self.locked():
-            self._record_loaded(candidate_id, payload_hash, receipt)
+            self._record_loaded(
+                ex_type or receipt.ex_type,
+                candidate_id,
+                payload_hash,
+                receipt,
+            )
 
     @contextmanager
     def locked(self) -> Any:
@@ -116,8 +128,6 @@ class SubmitIdempotencyStore:
                 if self.path is not None:
                     if self.path.exists():
                         self._load()
-                    else:
-                        self._records = {}
                 yield
 
     @classmethod
@@ -157,18 +167,27 @@ class SubmitIdempotencyStore:
 
     def _seen_loaded(
         self,
+        ex_type: str,
         candidate_id: str,
         payload_hash: str,
     ) -> CandidateSubmitReceipt | None:
-        return self._records.get(_idempotency_key(candidate_id, payload_hash))
+        receipt = self._records.get(
+            _idempotency_key(ex_type, candidate_id, payload_hash)
+        )
+        if receipt is not None:
+            return receipt
+        if ex_type == "Ex-1":
+            return self._records.get(_legacy_idempotency_key(candidate_id, payload_hash))
+        return None
 
     def _record_loaded(
         self,
+        ex_type: str,
         candidate_id: str,
         payload_hash: str,
         receipt: CandidateSubmitReceipt,
     ) -> None:
-        self._records[_idempotency_key(candidate_id, payload_hash)] = receipt
+        self._records[_idempotency_key(ex_type, candidate_id, payload_hash)] = receipt
         self._persist()
 
     def _load(self) -> None:
@@ -215,13 +234,13 @@ class SubmitIdempotencyStore:
 
 
 def submit_candidates(
-    candidates: Sequence[AnnouncementFactCandidate],
+    candidates: Sequence[CandidatePayload],
     subsystem: AnnouncementSubsystem,
     *,
     idempotency_store: SubmitIdempotencyStore | None = None,
     max_attempts: int = 3,
 ) -> SubmitBatchResult:
-    """Submit Ex-1 fact candidates in order with retry and idempotency."""
+    """Submit Ex-1/Ex-2 candidates in order with retry and idempotency."""
 
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
@@ -238,11 +257,16 @@ def submit_candidates(
         try:
             payload = _validated_payload(candidate)
             payload_hash = _payload_hash(payload)
+            candidate_id = candidate_id_for(candidate)
+            ex_type = ex_type_for(candidate)
         except Exception as exc:
             failed += 1
-            fact_id = getattr(candidate, "fact_id", "unknown")
+            candidate_id = _best_effort_candidate_id(candidate)
+            ex_type = _best_effort_ex_type(candidate)
             trace = CandidateSubmitTrace(
-                fact_id=str(fact_id),
+                fact_id=candidate_id,
+                candidate_id=candidate_id,
+                ex_type=ex_type,
                 status="failed",
                 attempts=0,
                 errors=[str(exc)],
@@ -252,11 +276,13 @@ def submit_candidates(
             continue
 
         with store.locked():
-            previous_receipt = store._seen_loaded(candidate.fact_id, payload_hash)
+            previous_receipt = store._seen_loaded(ex_type, candidate_id, payload_hash)
             if previous_receipt is not None:
                 skipped_duplicates += 1
                 trace = CandidateSubmitTrace(
-                    fact_id=candidate.fact_id,
+                    fact_id=candidate_id,
+                    candidate_id=candidate_id,
+                    ex_type=ex_type,
                     status="duplicate",
                     receipt_id=previous_receipt.receipt_id,
                     attempts=0,
@@ -267,7 +293,8 @@ def submit_candidates(
                 continue
 
             receipt, trace = _submit_one(
-                candidate.fact_id,
+                candidate_id,
+                ex_type,
                 payload_hash,
                 payload,
                 subsystem,
@@ -280,8 +307,27 @@ def submit_candidates(
                 continue
 
             submitted += 1
+            try:
+                store._record_loaded(ex_type, candidate_id, payload_hash, receipt)
+            except Exception as exc:
+                message = f"idempotency receipt persistence failed: {exc}"
+                receipt = receipt.model_copy(
+                    update={
+                        "warnings": (*receipt.warnings, message),
+                        "requires_reconciliation": True,
+                    }
+                )
+                trace = trace.model_copy(
+                    update={
+                        "errors": [*trace.errors, message],
+                        "requires_reconciliation": True,
+                    }
+                )
+                store._records[
+                    _idempotency_key(ex_type, candidate_id, payload_hash)
+                ] = receipt
+                traces[-1] = trace
             receipts.append(receipt)
-            store._record_loaded(candidate.fact_id, payload_hash, receipt)
 
     return SubmitBatchResult(
         submitted=submitted,
@@ -294,7 +340,8 @@ def submit_candidates(
 
 
 def _submit_one(
-    fact_id: str,
+    candidate_id: str,
+    ex_type: Literal["Ex-1", "Ex-2"],
     payload_hash: str,
     payload: dict[str, Any],
     subsystem: AnnouncementSubsystem,
@@ -316,16 +363,20 @@ def _submit_one(
                 errors.append("subsystem-sdk accepted payload without receipt_id")
                 continue
             receipt = CandidateSubmitReceipt(
-                fact_id=fact_id,
+                fact_id=candidate_id,
+                candidate_id=candidate_id,
                 payload_hash=payload_hash,
                 receipt_id=last_receipt_id,
+                ex_type=ex_type,
                 attempts=attempt,
                 accepted_at=datetime.now(timezone.utc),
                 warnings=_string_tuple(_result_field(result, "warnings")),
                 errors=_string_tuple(_result_field(result, "errors")),
             )
             trace = CandidateSubmitTrace(
-                fact_id=fact_id,
+                fact_id=candidate_id,
+                candidate_id=candidate_id,
+                ex_type=ex_type,
                 status="accepted",
                 receipt_id=receipt.receipt_id,
                 attempts=attempt,
@@ -344,12 +395,14 @@ def _submit_one(
             if part
         )
         errors.append(
-            "subsystem-sdk rejected Ex-1 payload"
+            f"subsystem-sdk rejected {ex_type} payload"
             + (f": {detail}" if detail else "")
         )
 
     return None, CandidateSubmitTrace(
-        fact_id=fact_id,
+        fact_id=candidate_id,
+        candidate_id=candidate_id,
+        ex_type=ex_type,
         status="failed",
         receipt_id=last_receipt_id,
         attempts=max_attempts,
@@ -357,19 +410,56 @@ def _submit_one(
     )
 
 
-def _validated_payload(candidate: AnnouncementFactCandidate) -> dict[str, Any]:
+def _validated_payload(candidate: CandidatePayload) -> dict[str, Any]:
     payload = candidate.to_ex_payload()
-    if payload.get("ex_type") != "Ex-1":
-        raise ValueError("submit_candidates only accepts Ex-1 payloads")
+    ex_type = payload.get("ex_type")
+    if ex_type not in {"Ex-1", "Ex-2"}:
+        raise ValueError("submit_candidates only accepts Ex-1/Ex-2 payloads")
     if not payload.get("evidence_spans"):
-        raise ValueError("Ex-1 payload requires at least one evidence span")
+        raise ValueError(f"{ex_type} payload requires at least one evidence span")
     source_reference = payload.get("source_reference")
     if not isinstance(source_reference, Mapping):
-        raise ValueError("Ex-1 payload requires source_reference")
+        raise ValueError(f"{ex_type} payload requires source_reference")
     _validate_source_reference(payload, source_reference)
     _reject_forbidden_runtime_keys(payload)
-    validated = AnnouncementFactCandidate.model_validate(payload)
+    if ex_type == "Ex-1":
+        validated = AnnouncementFactCandidate.model_validate(payload)
+    else:
+        validated = AnnouncementSignalCandidate.model_validate(payload)
     return validated.model_dump(mode="json")
+
+
+def candidate_id_for(candidate: CandidatePayload) -> str:
+    """Return the stable candidate id regardless of Ex type."""
+
+    ex_type = ex_type_for(candidate)
+    if ex_type == "Ex-1":
+        return candidate.fact_id
+    return candidate.signal_id
+
+
+def ex_type_for(candidate: CandidatePayload) -> Literal["Ex-1", "Ex-2"]:
+    """Return the candidate Ex type."""
+
+    ex_type = getattr(candidate, "ex_type", None)
+    if ex_type not in {"Ex-1", "Ex-2"}:
+        raise ValueError("candidate must be Ex-1 or Ex-2")
+    return ex_type
+
+
+def _best_effort_candidate_id(candidate: object) -> str:
+    for attribute in ("fact_id", "signal_id"):
+        value = getattr(candidate, attribute, None)
+        if isinstance(value, str) and value:
+            return value
+    return "unknown"
+
+
+def _best_effort_ex_type(candidate: object) -> Literal["Ex-1", "Ex-2"] | None:
+    value = getattr(candidate, "ex_type", None)
+    if value in {"Ex-1", "Ex-2"}:
+        return value
+    return None
 
 
 def _validate_source_reference(
@@ -405,7 +495,7 @@ def _reject_forbidden_runtime_keys(value: Any, path: str = "") -> None:
             key_text = str(key)
             if key_text in _FORBIDDEN_RUNTIME_KEYS:
                 raise ValueError(
-                    f"Ex-1 payload contains forbidden runtime key: {path}{key_text}"
+                    f"candidate payload contains forbidden runtime key: {path}{key_text}"
                 )
             _reject_forbidden_runtime_keys(item, f"{path}{key_text}.")
     elif isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
@@ -429,7 +519,11 @@ def _payload_hash(payload: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
-def _idempotency_key(candidate_id: str, payload_hash: str) -> str:
+def _idempotency_key(ex_type: str, candidate_id: str, payload_hash: str) -> str:
+    return f"{ex_type}:{candidate_id}:{payload_hash}"
+
+
+def _legacy_idempotency_key(candidate_id: str, payload_hash: str) -> str:
     return f"{candidate_id}:{payload_hash}"
 
 

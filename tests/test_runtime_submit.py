@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import threading
+from datetime import datetime, timezone
 from typing import Any
 
 from subsystem_announcement.extract import AnnouncementFactCandidate, extract_fact_candidates
@@ -10,6 +11,7 @@ from subsystem_announcement.runtime.submit import (
     SubmitIdempotencyStore,
     submit_candidates,
 )
+from subsystem_announcement.signals import derive_signal_candidates
 
 from .extract_fixtures import make_artifact
 
@@ -71,6 +73,44 @@ def test_submit_candidates_preserves_order_and_records_receipts() -> None:
     assert [trace.status for trace in result.traces] == ["accepted", "accepted"]
 
 
+def test_submit_candidates_accepts_mixed_ex1_ex2_in_order() -> None:
+    fact = _fact("ann-mixed-submit")
+    signal = derive_signal_candidates(
+        [fact],
+        generated_at=datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc),
+    )[0]
+    subsystem = RecordingSubsystem([_accepted("receipt-1"), _accepted("receipt-2")])
+
+    result = submit_candidates([fact, signal], subsystem)  # type: ignore[arg-type]
+
+    assert [payload["ex_type"] for payload in subsystem.submissions] == [
+        "Ex-1",
+        "Ex-2",
+    ]
+    assert subsystem.submissions[1]["source_fact_ids"] == [fact.fact_id]
+    assert [receipt.ex_type for receipt in result.receipts] == ["Ex-1", "Ex-2"]
+    assert [trace.ex_type for trace in result.traces] == ["Ex-1", "Ex-2"]
+
+
+def test_submit_candidates_idempotency_separates_ex_type_from_candidate_id() -> None:
+    fact = _fact("ann-idempotency-ex-type")
+    signal = derive_signal_candidates(
+        [fact],
+        generated_at=datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc),
+    )[0].model_copy(update={"signal_id": fact.fact_id})
+    subsystem = RecordingSubsystem([_accepted("receipt-1"), _accepted("receipt-2")])
+    store = SubmitIdempotencyStore()
+
+    first = submit_candidates([fact, signal], subsystem, idempotency_store=store)  # type: ignore[arg-type]
+    second = submit_candidates([fact, signal], subsystem, idempotency_store=store)  # type: ignore[arg-type]
+
+    assert first.submitted == 2
+    assert first.skipped_duplicates == 0
+    assert second.submitted == 0
+    assert second.skipped_duplicates == 2
+    assert len(subsystem.submissions) == 2
+
+
 def test_submit_candidates_skips_duplicate_fact_id_and_payload_hash() -> None:
     fact = _fact("ann-duplicate")
     subsystem = RecordingSubsystem([_accepted("receipt-original")])
@@ -87,6 +127,29 @@ def test_submit_candidates_skips_duplicate_fact_id_and_payload_hash() -> None:
     assert second.receipts[0].receipt_id == "receipt-original"
     assert second.traces[0].status == "duplicate"
     assert second.traces[0].receipt_id == "receipt-original"
+
+
+def test_submit_candidates_surfaces_accepted_receipt_when_persistence_fails() -> None:
+    class FailingRecordStore(SubmitIdempotencyStore):
+        def _record_loaded(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("disk full")
+
+    fact = _fact("ann-persist-failure")
+    subsystem = RecordingSubsystem([_accepted("receipt-accepted")])
+    store = FailingRecordStore()
+
+    first = submit_candidates([fact], subsystem, idempotency_store=store)  # type: ignore[arg-type]
+    second = submit_candidates([fact], subsystem, idempotency_store=store)  # type: ignore[arg-type]
+
+    assert first.submitted == 1
+    assert first.failed == 0
+    assert first.receipts[0].receipt_id == "receipt-accepted"
+    assert first.receipts[0].requires_reconciliation is True
+    assert first.traces[0].requires_reconciliation is True
+    assert "persistence failed" in first.traces[0].errors[0]
+    assert second.submitted == 0
+    assert second.skipped_duplicates == 1
+    assert len(subsystem.submissions) == 1
 
 
 def test_submit_candidates_serializes_file_backed_idempotency(
