@@ -91,6 +91,50 @@ if typer is not None:
             typer.echo(f"run failed: {exc}", err=True)
             raise typer.Exit(code=1) from exc
         typer.echo("ok")
+
+    @app.command("process")
+    def process_command(
+        envelope: Path = typer.Option(
+            ...,
+            "--envelope",
+            help="Announcement envelope JSON path.",
+        ),
+        config: Path = typer.Option(
+            ...,
+            "--config",
+            "-c",
+            help="Announcement TOML config path.",
+        ),
+        trace_output: Path | None = typer.Option(
+            None,
+            "--trace-output",
+            help="Optional path for an additional trace JSON copy.",
+        ),
+    ) -> None:
+        """Process one announcement envelope through Ex-1 submit."""
+
+        try:
+            configure_logging()
+            runtime_config = load_config(config)
+            announcement_envelope = _load_envelope(envelope)
+            from .runtime.pipeline import AnnouncementPipeline
+
+            run = asyncio.run(
+                AnnouncementPipeline(runtime_config).process_envelope(
+                    announcement_envelope
+                )
+            )
+            _write_trace_copy(run, trace_output)
+        except Exception as exc:
+            typer.echo(f"process failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        if run.status != "succeeded":
+            typer.echo(
+                f"process failed: status={run.status} trace={run.trace_path}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        typer.echo(f"ok trace={run.trace_path}")
 else:
     app = None
 
@@ -137,9 +181,43 @@ def _fallback_main(argv: list[str]) -> int:
             return 1
         print("ok")
         return 0
+    if command == "process":
+        envelope_path = _option_path(argv, "--envelope")
+        config_path = _option_path(argv, "--config") or _option_path(argv, "-c")
+        trace_output = _option_path(argv, "--trace-output")
+        if envelope_path is None or config_path is None:
+            print(
+                "usage: python -m subsystem_announcement process "
+                "--envelope PATH --config PATH [--trace-output PATH]",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            configure_logging()
+            runtime_config = load_config(config_path)
+            announcement_envelope = _load_envelope(envelope_path)
+            from .runtime.pipeline import AnnouncementPipeline
+
+            run = asyncio.run(
+                AnnouncementPipeline(runtime_config).process_envelope(
+                    announcement_envelope
+                )
+            )
+            _write_trace_copy(run, trace_output)
+        except Exception as exc:
+            print(f"process failed: {exc}", file=sys.stderr)
+            return 1
+        if run.status != "succeeded":
+            print(
+                f"process failed: status={run.status} trace={run.trace_path}",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"ok trace={run.trace_path}")
+        return 0
 
     print(
-        "usage: python -m subsystem_announcement [version|doctor|ping|run]",
+        "usage: python -m subsystem_announcement [version|doctor|ping|run|process]",
         file=sys.stderr,
     )
     return 1
@@ -177,6 +255,36 @@ def _version_status(value: str) -> str:
     if value == "not-configured":
         return "not-configured (unset)"
     return value
+
+
+def _load_envelope(path: Path) -> object:
+    from .discovery import AnnouncementEnvelope
+
+    try:
+        return AnnouncementEnvelope.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Unable to load announcement envelope: path={path}") from exc
+
+
+def _write_trace_copy(run: object, trace_output: Path | None) -> None:
+    if trace_output is None:
+        return
+    if not hasattr(run, "model_dump_json"):
+        raise RuntimeError("Trace object does not support JSON serialization")
+    try:
+        trace_output.parent.mkdir(parents=True, exist_ok=True)
+        trace_output.write_text(run.model_dump_json(indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Unable to write trace output: path={trace_output}") from exc
+
+
+def _option_path(argv: list[str], option: str) -> Path | None:
+    if option not in argv:
+        return None
+    index = argv.index(option)
+    if index + 1 >= len(argv):
+        return None
+    return Path(argv[index + 1])
 
 
 if __name__ == "__main__":
