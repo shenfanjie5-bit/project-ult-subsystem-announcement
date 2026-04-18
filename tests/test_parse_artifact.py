@@ -71,17 +71,42 @@ def _artifact(local_path: Path) -> ParsedAnnouncementArtifact:
 
 def test_docling_dependency_is_exactly_pinned() -> None:
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    dependencies = pyproject["project"]["dependencies"]
-    docling_dependencies = [
-        dependency for dependency in dependencies if dependency.startswith("docling")
-    ]
+    dependencies = _all_declared_dependencies(pyproject)
 
-    assert docling_dependencies == ["docling==2.15.1"]
+    assert "docling==2.15.1" in dependencies
+    assert "llama-index-core==0.10.0" in dependencies
     assert not any(dependency.startswith("docling>=") for dependency in dependencies)
+    assert not any(
+        dependency.startswith("docling-core<2") for dependency in dependencies
+    )
+    assert not any(
+        dependency.startswith("docling-core==1") for dependency in dependencies
+    )
     assert not any(
         dependency.startswith("llama-index-node-parser-docling")
         for dependency in dependencies
     )
+
+
+def _all_declared_dependencies(pyproject: dict[str, object]) -> list[str]:
+    project = pyproject["project"]
+    assert isinstance(project, dict)
+    dependencies = project["dependencies"]
+    assert isinstance(dependencies, list)
+    declared = [
+        dependency for dependency in dependencies if isinstance(dependency, str)
+    ]
+
+    optional = project.get("optional-dependencies", {})
+    assert isinstance(optional, dict)
+    for dependency_group in optional.values():
+        assert isinstance(dependency_group, list)
+        declared.extend(
+            dependency
+            for dependency in dependency_group
+            if isinstance(dependency, str)
+        )
+    return declared
 
 
 def test_parsed_artifact_round_trips_to_disk(tmp_path: Path) -> None:
