@@ -10,6 +10,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "docling==2.15.1",
+    "llama-index-core==0.10.0",
+    "llama-index-node-parser-docling==0.1.0",
     "pydantic>=2.6",
     "typer>=0.12",
     "structlog>=24.1",
