@@ -176,7 +176,7 @@ def _document_from_chunk(Document: Any, chunk: AnnouncementChunk) -> Any:
         "title_path": chunk.title_path,
         "source_reference": chunk.source_reference,
     }
-    return Document(text=chunk.text, metadata=metadata_payload)
+    return Document(text=chunk.text, metadata=metadata_payload, id_=chunk.chunk_id)
 
 
 def _index_from_documents(
@@ -190,6 +190,7 @@ def _index_from_documents(
         return api.VectorStoreIndex.from_documents(
             documents,
             storage_context=storage_context,
+            transformations=[],
             embed_model=embed_model,
         )
     except TypeError:
@@ -198,6 +199,7 @@ def _index_from_documents(
             return api.VectorStoreIndex.from_documents(
                 documents,
                 storage_context=storage_context,
+                transformations=[],
             )
         previous_embed_model = getattr(settings, "embed_model", None)
         settings.embed_model = embed_model
@@ -205,6 +207,7 @@ def _index_from_documents(
             return api.VectorStoreIndex.from_documents(
                 documents,
                 storage_context=storage_context,
+                transformations=[],
             )
         finally:
             settings.embed_model = previous_embed_model

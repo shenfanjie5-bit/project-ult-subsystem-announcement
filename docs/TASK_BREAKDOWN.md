@@ -269,10 +269,10 @@ pytest -q
 
 ### ISSUE-009: 公告域 chunk / index 与 retrieval artifact
 **labels**: P2, feature, milestone-3
-**摘要**: 将 `ParsedAnnouncementArtifact` 按章节 / 表格 / 条款切片，通过 LlamaIndex `DoclingNodeParser` 构建本地向量索引，并输出 `AnnouncementRetrievalArtifact` 引用。
+**摘要**: 将 `ParsedAnnouncementArtifact` 按章节 / 表格 / 条款切片，通过 chunk_id 锚定的 LlamaIndex 节点构建本地向量索引，并输出 `AnnouncementRetrievalArtifact` 引用。
 **所属模块**: 主写 `src/subsystem_announcement/index/`（`chunker.py`、`vector_store.py`、`retrieval_artifact.py`、`sample_query.py`）+ `tests/test_index_*.py`。
 **写入边界**: 允许修改 index package 与测试；禁止修改 extract / signals / graph；禁止把索引构建压进日频关键路径，重建脚本须以离线 CLI 形式提供。
-**实现顺序**: 先实现章节/表格 chunk，再接 LlamaIndex `DoclingNodeParser` + `SimpleVectorStore` / FAISS Lite 二选一，再落 `AnnouncementRetrievalArtifact` 持久化，最后实现示例 `query(text)` 并补端到端检索测试。
+**实现顺序**: 先实现章节/表格 chunk，再接 chunk_id 锚定的 LlamaIndex 节点 + `SimpleVectorStore` / FAISS Lite 二选一，再落 `AnnouncementRetrievalArtifact` 持久化，最后实现示例 `query(text)` 并补端到端检索测试。
 **依赖**: #ISSUE-008（阶段 2 稳定后再并检索链）
 
 ---

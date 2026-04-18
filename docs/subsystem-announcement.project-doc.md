@@ -229,7 +229,7 @@ official announcement body
 ```text
 parsed announcement artifact
   -> chunk into retrieval units
-  -> LlamaIndex DoclingNodeParser
+  -> chunk_id-backed LlamaIndex nodes
   -> local vector / index
   -> query by historical context
 ```
@@ -531,7 +531,7 @@ use ts_code / company name deterministic match first
 ```text
 load parsed announcement JSON
   -> chunk by section / table / clause
-  -> LlamaIndex DoclingNodeParser
+  -> chunk_id-backed LlamaIndex nodes
   -> build local vector index
   -> store retrieval refs
 ```

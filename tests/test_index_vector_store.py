@@ -48,6 +48,57 @@ def test_build_vector_index_persists_simple_vector_store(
     assert installed["build_embed_models"]
 
 
+def test_build_vector_index_pins_chunk_node_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed = _install_fake_llama_index(monkeypatch)
+    chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
+    config = AnnouncementConfig(
+        llama_index_version="llama-index-core==0.10.0",
+        allow_test_mock_embeddings=True,
+    )
+
+    index_ref = build_vector_index(
+        chunks,
+        persist_dir=tmp_path / "vector-store",
+        config=config,
+    )
+    persisted = json.loads(
+        (tmp_path / "vector-store" / "fake_vector_index.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    artifact = AnnouncementRetrievalArtifact(
+        announcement_id="ann-index-1",
+        chunk_refs=[chunk.chunk_id for chunk in chunks],
+        index_ref=index_ref.index_ref,
+        parser_version="docling==2.15.1",
+        llama_index_version=index_ref.llama_index_version,
+        embedding_strategy=index_ref.embedding_strategy,
+        chunk_count=len(chunks),
+        built_at=index_ref.built_at,
+        source_parsed_artifact_path=None,
+        chunks=chunks,
+    )
+
+    assert installed["build_transformations"] == [[]]
+    assert len(persisted["documents"]) == len(chunks)
+    assert [item["id_"] for item in persisted["documents"]] == [
+        chunk.chunk_id for chunk in chunks
+    ]
+    assert [item["metadata"]["chunk_id"] for item in persisted["documents"]] == [
+        chunk.chunk_id for chunk in chunks
+    ]
+
+    table_chunk = next(chunk for chunk in chunks if chunk.table_ref == "tbl-0001")
+    hits = query("1000万元", artifact, top_k=1, config=config)
+
+    assert installed["load_embed_models"]
+    assert hits[0].chunk_id == table_chunk.chunk_id
+    assert hits[0].metadata["chunk_type"] == "table"
+
+
 def test_query_returns_section_and_table_keyword_hits(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -371,11 +422,19 @@ def _chunk(chunk_id: str, section_id: str, text: str) -> AnnouncementChunk:
 def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     calls: dict[str, Any] = {
         "build_embed_models": [],
+        "build_transformations": [],
         "load_embed_models": [],
     }
 
     class FakeDocument:
-        def __init__(self, *, text: str, metadata: dict[str, Any]) -> None:
+        def __init__(
+            self,
+            *,
+            text: str,
+            metadata: dict[str, Any],
+            id_: str,
+        ) -> None:
+            self.id_ = id_
             self.text = text
             self.metadata = metadata
 
@@ -400,7 +459,11 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
                 index_path = Path(persist_dir) / "fake_vector_index.json"
                 data = json.loads(index_path.read_text(encoding="utf-8"))
                 self.documents = [
-                    FakeDocument(text=item["text"], metadata=item["metadata"])
+                    FakeDocument(
+                        id_=item["id_"],
+                        text=item["text"],
+                        metadata=item["metadata"],
+                    )
                     for item in data["documents"]
                 ]
                 self.embeddings = data.get("embeddings", [])
@@ -414,7 +477,11 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
             output_dir.mkdir(parents=True, exist_ok=True)
             payload = {
                 "documents": [
-                    {"text": document.text, "metadata": document.metadata}
+                    {
+                        "id_": document.id_,
+                        "text": document.text,
+                        "metadata": document.metadata,
+                    }
                     for document in self.documents
                 ],
                 "embeddings": self.embeddings,
@@ -451,8 +518,9 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
             transformations=None,
             embed_model=None,
         ):
-            assert transformations is None
+            assert transformations == []
             assert embed_model is not None
+            calls["build_transformations"].append(list(transformations))
             calls["build_embed_models"].append(embed_model)
             return cls(list(documents), storage_context, embed_model=embed_model)
 

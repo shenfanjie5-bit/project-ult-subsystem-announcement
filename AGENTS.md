@@ -9,7 +9,7 @@
 
 - **语言**：Python
 - **文档解析**：Docling（唯一 parser，版本必须锁定）
-- **检索索引**：LlamaIndex + DoclingNodeParser + SimpleVectorStore / FAISS（Lite）
+- **检索索引**：LlamaIndex chunk 节点 + SimpleVectorStore / FAISS（Lite）
 - **子系统框架**：`subsystem-sdk`（submit / heartbeat / validator / fixtures）
 - **结构化抽取辅助**：`reasoner-runtime.generate_structured()`（不直连 provider SDK）
 
