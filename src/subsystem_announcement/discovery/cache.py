@@ -33,6 +33,9 @@ class AnnouncementDocumentCache:
         metadata_path = _metadata_path_for_document(document_path)
         artifact = AnnouncementDocumentArtifact(
             announcement_id=envelope.announcement_id,
+            ts_code=envelope.ts_code,
+            title=envelope.title,
+            publish_time=envelope.publish_time,
             content_hash=content_hash,
             official_url=envelope.official_url,
             source_exchange=envelope.source_exchange,

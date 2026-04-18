@@ -16,6 +16,9 @@ def make_artifact(
     *,
     announcement_id: str = "ann-extract-1",
     title: str = "测试公告",
+    source_ts_code: str | None = None,
+    source_title: str | None = None,
+    source_publish_time: datetime | None = None,
     source_exchange: str = "sse",
     tables: list[AnnouncementTable] | None = None,
 ) -> ParsedAnnouncementArtifact:
@@ -53,6 +56,9 @@ def make_artifact(
         parsed_at=datetime(2026, 4, 18, 9, 31, tzinfo=timezone.utc),
         source_document=AnnouncementDocumentArtifact(
             announcement_id=announcement_id,
+            ts_code=source_ts_code,
+            title=source_title,
+            publish_time=source_publish_time,
             content_hash="a" * 64,
             official_url=f"https://static.sse.com.cn/disclosure/{announcement_id}.pdf",
             source_exchange=source_exchange,

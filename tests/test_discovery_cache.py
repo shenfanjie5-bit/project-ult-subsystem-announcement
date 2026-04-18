@@ -21,17 +21,27 @@ from subsystem_announcement.discovery.dedupe import (
 )
 from subsystem_announcement.discovery.envelope import AnnouncementEnvelope
 from subsystem_announcement.discovery.errors import DocumentCacheError
+from subsystem_announcement.extract import extract_fact_candidates
+from subsystem_announcement.parse.artifact import (
+    AnnouncementSection,
+    ParsedAnnouncementArtifact,
+)
 
 
 def _envelope(
     announcement_id: str = "ann-1",
     url: str | None = None,
+    *,
+    ts_code: str = "600000.SH",
+    title: str = "重大合同公告",
+    publish_time: datetime | None = None,
 ) -> AnnouncementEnvelope:
     return AnnouncementEnvelope(
         announcement_id=announcement_id,
-        ts_code="600000.SH",
-        title="重大合同公告",
-        publish_time=datetime(2026, 4, 18, 9, 30, tzinfo=timezone.utc),
+        ts_code=ts_code,
+        title=title,
+        publish_time=publish_time
+        or datetime(2026, 4, 18, 9, 30, tzinfo=timezone.utc),
         official_url=url
         or f"https://static.sse.com.cn/disclosure/{announcement_id}.pdf",
         source_exchange="sse",
@@ -61,6 +71,9 @@ def test_document_cache_put_writes_bytes_and_round_trips_metadata(
     assert cache.load(artifact.local_path) == artifact
     assert artifact.byte_size == len(b"pdf bytes")
     assert artifact.content_type == "application/pdf"
+    assert artifact.ts_code == "600000.SH"
+    assert artifact.title == "重大合同公告"
+    assert artifact.publish_time == _envelope().publish_time
 
 
 def test_dedupe_store_finds_recorded_artifact_by_id_and_hash(
@@ -113,6 +126,35 @@ def test_dedupe_store_rejects_same_announcement_id_with_conflicting_hash(
         store.record(second)
 
     assert store.find_by_announcement_id("ann-1") == first
+
+
+def test_dedupe_store_records_same_hash_with_per_announcement_metadata(
+    tmp_path: Path,
+) -> None:
+    config = AnnouncementConfig(artifact_root=tmp_path)
+    cache = AnnouncementDocumentCache(config)
+    first = cache.put(_envelope("ann-1", ts_code="600000.SH"), b"same pdf bytes")
+    second = cache.put(
+        _envelope(
+            "ann-2",
+            ts_code="000001.SZ",
+            title="平安银行业绩预告",
+        ),
+        b"same pdf bytes",
+    )
+    store = AnnouncementDedupeStore(tmp_path)
+
+    store.record(first)
+    store.record(second)
+
+    loaded_second = store.find_by_announcement_id("ann-2")
+    assert loaded_second is not None
+    assert loaded_second.announcement_id == "ann-2"
+    assert loaded_second.ts_code == "000001.SZ"
+    assert loaded_second.title == "平安银行业绩预告"
+    assert loaded_second.local_path == first.local_path
+    assert store.find_by_content_hash(first.content_hash) == first
+    assert len(_document_body_files(tmp_path)) == 1
 
 
 def test_dedupe_store_uses_relative_paths_after_artifact_root_move(
@@ -220,10 +262,68 @@ def test_consume_announcement_ref_marks_same_content_hash_duplicate(
     assert first.status == "fetched"
     assert second.status == "duplicate"
     assert third.status == "duplicate"
+    assert second.document.announcement_id == "ann-2"
+    assert third.document.announcement_id == "ann-2"
     assert second.document.local_path == first.document.local_path
     assert third.document.local_path == first.document.local_path
     assert request_count == 2
     assert len(body_files) == 1
+
+
+def test_duplicate_content_preserves_current_envelope_for_extraction_anchor(
+    tmp_path: Path,
+) -> None:
+    publish_time = datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"same pdf bytes")
+
+    async def scenario():
+        config = AnnouncementConfig(artifact_root=tmp_path)
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            first = await consume_announcement_ref(
+                _envelope(
+                    "ann-1",
+                    ts_code="600000.SH",
+                    title="浦发银行业绩预告",
+                ),
+                config,
+                client=client,
+            )
+            second = await consume_announcement_ref(
+                _envelope(
+                    "ann-2",
+                    ts_code="000001.SZ",
+                    title="平安银行业绩预告",
+                    publish_time=publish_time,
+                ),
+                config,
+                client=client,
+            )
+            return first, second
+
+    first, second = asyncio.run(scenario())
+    parsed = _parsed_artifact(
+        second.document,
+        "公司预计2026年净利润同比增长50%，本公告为业绩预告。",
+    )
+
+    fact = extract_fact_candidates(parsed)[0]
+
+    assert second.status == "duplicate"
+    assert second.document.local_path == first.document.local_path
+    assert second.document.announcement_id == "ann-2"
+    assert second.document.ts_code == "000001.SZ"
+    assert second.document.title == "平安银行业绩预告"
+    assert second.document.publish_time == publish_time
+    assert fact.announcement_id == "ann-2"
+    assert fact.primary_entity_id == "ts_code:000001.SZ"
+    assert fact.source_reference["ts_code"] == "000001.SZ"
+    assert fact.source_reference["title"] == "平安银行业绩预告"
+    assert fact.source_reference["publish_time"] == publish_time.isoformat()
+    assert len(_document_body_files(tmp_path)) == 1
 
 
 def test_consume_announcement_ref_concurrent_same_id_returns_canonical_artifact(
@@ -314,3 +414,30 @@ def _document_body_files(root: Path) -> list[Path]:
         for path in (root / "documents").rglob("*")
         if path.is_file() and path.suffix in {".pdf", ".html", ".doc", ".docx"}
     ]
+
+
+def _parsed_artifact(
+    document,
+    text: str,
+) -> ParsedAnnouncementArtifact:
+    return ParsedAnnouncementArtifact(
+        announcement_id=document.announcement_id,
+        content_hash=document.content_hash,
+        parser_version="docling==2.15.1",
+        title_hierarchy=[document.title or "测试公告"],
+        sections=[
+            AnnouncementSection(
+                section_id="sec-0001",
+                title=document.title,
+                level=1,
+                text=text,
+                start_offset=0,
+                end_offset=len(text),
+                parent_id=None,
+            )
+        ],
+        tables=[],
+        extracted_text=text,
+        parsed_at=datetime(2026, 4, 18, 9, 31, tzinfo=timezone.utc),
+        source_document=document,
+    )

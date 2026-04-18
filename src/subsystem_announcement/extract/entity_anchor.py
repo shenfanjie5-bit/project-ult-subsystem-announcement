@@ -99,6 +99,19 @@ class EntityAnchorer:
     ) -> EntityAnchor:
         """Anchor the announcing company from code/short-name before registry use."""
 
+        envelope_ts_code = _optional_str(parsed_artifact.source_document.ts_code)
+        if envelope_ts_code is not None:
+            normalized_code = _normalize_ts_code(
+                envelope_ts_code,
+                parsed_artifact.source_document.source_exchange,
+            )
+            return EntityAnchor(
+                mention_text=normalized_code,
+                entity_id=f"ts_code:{normalized_code}",
+                confidence=1.0,
+                resolution_method="ts_code",
+            )
+
         text = _artifact_body_text(parsed_artifact)
         ts_code = _extract_ts_code(text)
         short_name = _extract_short_name(text)
