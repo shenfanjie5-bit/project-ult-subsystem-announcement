@@ -45,7 +45,8 @@ def test_build_vector_index_persists_simple_vector_store(
     assert ref.embedding_strategy.model_dimension == 384
     assert ref.chunk_ids == [chunk.chunk_id for chunk in chunks]
     assert (tmp_path / "vector-store" / "fake_vector_index.json").exists()
-    assert installed["docling_parser_calls"] == 1
+    transformation = installed["build_transformations"][0][0]
+    assert transformation.class_name() == "AnnouncementChunkIdentityTransform"
 
 
 def test_query_returns_section_and_table_keyword_hits(
@@ -107,7 +108,7 @@ def test_build_vector_index_uses_configured_embedding_adapter(
 ) -> None:
     installed = _install_fake_llama_index(monkeypatch)
     chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
-    embedding = FakeSemanticEmbedding()
+    embedding = FakeSemanticEmbedding(identity=_embedding_identity())
     adapter_module = types.ModuleType("fake_embedding_adapter")
     adapter_module.build_embedding = lambda: embedding
     monkeypatch.setitem(sys.modules, "fake_embedding_adapter", adapter_module)
@@ -131,8 +132,7 @@ def test_build_vector_index_records_configured_embedding_strategy(
 ) -> None:
     _install_fake_llama_index(monkeypatch)
     chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
-    embedding = FakeSemanticEmbedding()
-    embedding.model_version = "semantic-fixture-v1"
+    embedding = FakeSemanticEmbedding(identity=_embedding_identity())
     adapter_module = types.ModuleType("versioned_embedding_adapter")
     adapter_module.build_embedding = lambda: embedding
     monkeypatch.setitem(sys.modules, "versioned_embedding_adapter", adapter_module)
@@ -150,15 +150,82 @@ def test_build_vector_index_records_configured_embedding_strategy(
     assert ref.embedding_strategy == AnnouncementEmbeddingStrategy(
         strategy_type="adapter",
         adapter_ref="versioned_embedding_adapter:build_embedding",
-        model_ref=(
-            f"{FakeSemanticEmbedding.__module__}."
-            f"{FakeSemanticEmbedding.__qualname__}"
-        ),
+        model_ref="fake-semantic",
         model_version="semantic-fixture-v1",
-        model_dimension=None,
+        model_dimension=2,
         model_fingerprint=ref.embedding_strategy.model_fingerprint,
     )
     assert len(ref.embedding_strategy.model_fingerprint) == 64
+
+
+def test_build_vector_index_rejects_adapter_without_embedding_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_llama_index(monkeypatch)
+    chunks = chunk_parsed_artifact(make_index_artifact(tmp_path))
+    adapter_module = types.ModuleType("missing_identity_embedding_adapter")
+    adapter_module.build_embedding = lambda: FakeSemanticEmbedding()
+    monkeypatch.setitem(
+        sys.modules,
+        "missing_identity_embedding_adapter",
+        adapter_module,
+    )
+    config = AnnouncementConfig(
+        llama_index_version="llama-index-core==0.10.0",
+        retrieval_embedding_adapter="missing_identity_embedding_adapter:build_embedding",
+    )
+
+    with pytest.raises(RuntimeError, match="embedding_identity"):
+        build_vector_index(
+            chunks,
+            persist_dir=tmp_path / "vector-store",
+            config=config,
+        )
+
+
+def test_query_rejects_same_adapter_with_different_embedding_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_llama_index(monkeypatch)
+    chunks = [
+        _chunk(
+            "chunk:ann-semantic:sec-0001:section:inquiry",
+            "sec-0001",
+            "公司收到上海证券交易所监管问询函，将按要求及时回复。",
+        )
+    ]
+    embedding_v1 = FakeSemanticEmbedding(identity=_embedding_identity("config-v1"))
+    embedding_v2 = FakeSemanticEmbedding(identity=_embedding_identity("config-v2"))
+    adapter_module = types.ModuleType("drifting_embedding_adapter")
+    adapter_module.build_embedding = lambda: embedding_v1
+    monkeypatch.setitem(sys.modules, "drifting_embedding_adapter", adapter_module)
+    config = AnnouncementConfig(
+        llama_index_version="llama-index-core==0.10.0",
+        retrieval_embedding_adapter="drifting_embedding_adapter:build_embedding",
+    )
+    index_ref = build_vector_index(
+        chunks,
+        persist_dir=tmp_path / "vector-store",
+        config=config,
+    )
+    artifact = AnnouncementRetrievalArtifact(
+        announcement_id="ann-semantic",
+        chunk_refs=[chunk.chunk_id for chunk in chunks],
+        index_ref=index_ref.index_ref,
+        parser_version="docling==2.15.1",
+        llama_index_version=index_ref.llama_index_version,
+        embedding_strategy=index_ref.embedding_strategy,
+        chunk_count=len(chunks),
+        built_at=index_ref.built_at,
+        source_parsed_artifact_path=None,
+        chunks=chunks,
+    )
+    adapter_module.build_embedding = lambda: embedding_v2
+
+    with pytest.raises(RuntimeError, match="embedding strategy mismatch"):
+        query("交易所关注函", artifact, top_k=1, config=config)
 
 
 def test_query_uses_semantic_vectors_without_exact_word_overlap(
@@ -340,6 +407,12 @@ def test_build_vector_index_reports_missing_llama_index_dependency(
 
 
 class FakeSemanticEmbedding:
+    def __init__(self, *, identity: dict[str, Any] | None = None) -> None:
+        self._identity = identity
+
+    def embedding_identity(self) -> dict[str, Any]:
+        return dict(self._identity or {})
+
     def embed(self, text: str) -> list[float]:
         if "术语说明" in text:
             return [0.0, 1.0]
@@ -365,9 +438,18 @@ def _chunk(chunk_id: str, section_id: str, text: str) -> AnnouncementChunk:
     )
 
 
+def _embedding_identity(config_fingerprint: str = "config-v1") -> dict[str, Any]:
+    return {
+        "model_id": "fake-semantic",
+        "model_version": "semantic-fixture-v1",
+        "dimension": 2,
+        "config_fingerprint": config_fingerprint,
+    }
+
+
 def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     calls: dict[str, Any] = {
-        "docling_parser_calls": 0,
+        "build_transformations": [],
         "build_embed_models": [],
         "load_embed_models": [],
     }
@@ -422,10 +504,6 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
                 encoding="utf-8",
             )
 
-    class FakeDoclingNodeParser:
-        def __init__(self) -> None:
-            calls["docling_parser_calls"] += 1
-
     class FakeVectorStoreIndex:
         def __init__(
             self,
@@ -454,10 +532,13 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
             embed_model=None,
         ):
             assert transformations
-            assert isinstance(transformations[0], FakeDoclingNodeParser)
+            calls["build_transformations"].append(transformations)
             assert embed_model is not None
             calls["build_embed_models"].append(embed_model)
-            return cls(list(documents), storage_context, embed_model=embed_model)
+            transformed_documents = list(documents)
+            for transformation in transformations:
+                transformed_documents = transformation(transformed_documents)
+            return cls(transformed_documents, storage_context, embed_model=embed_model)
 
         def as_retriever(self, *, similarity_top_k: int):
             return FakeRetriever(
@@ -532,10 +613,6 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     core_module.load_index_from_storage = fake_load_index_from_storage
     vector_stores_module = types.ModuleType("llama_index.core.vector_stores")
     vector_stores_module.SimpleVectorStore = FakeSimpleVectorStore
-    node_parser_module = types.ModuleType("llama_index.node_parser")
-    node_parser_module.__path__ = []
-    docling_module = types.ModuleType("llama_index.node_parser.docling")
-    docling_module.DoclingNodeParser = FakeDoclingNodeParser
     embeddings_module = types.ModuleType("llama_index.core.embeddings")
     embeddings_module.__path__ = []
     mock_embedding_module = types.ModuleType(
@@ -549,12 +626,6 @@ def _install_fake_llama_index(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
         sys.modules,
         "llama_index.core.vector_stores",
         vector_stores_module,
-    )
-    monkeypatch.setitem(sys.modules, "llama_index.node_parser", node_parser_module)
-    monkeypatch.setitem(
-        sys.modules,
-        "llama_index.node_parser.docling",
-        docling_module,
     )
     monkeypatch.setitem(sys.modules, "llama_index.core.embeddings", embeddings_module)
     monkeypatch.setitem(

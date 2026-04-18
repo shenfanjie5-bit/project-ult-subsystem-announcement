@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-from collections.abc import Sequence
+import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib import metadata
@@ -46,8 +47,27 @@ class _LlamaIndexApi:
     StorageContext: Any
     VectorStoreIndex: Any
     SimpleVectorStore: Any
-    DoclingNodeParser: Any
     load_index_from_storage: Any
+
+
+class _AnnouncementChunkIdentityTransform:
+    """Keep retrieval chunks as the exact LlamaIndex nodes being indexed."""
+
+    @classmethod
+    def class_name(cls) -> str:
+        return "AnnouncementChunkIdentityTransform"
+
+    def __call__(self, nodes: Sequence[Any], **_: Any) -> list[Any]:
+        return list(nodes)
+
+    def to_dict(self) -> dict[str, str]:
+        return {"class_name": self.class_name()}
+
+    def dict(self) -> dict[str, str]:
+        return self.to_dict()
+
+    def model_dump(self) -> dict[str, str]:
+        return self.to_dict()
 
 
 def build_vector_index(
@@ -65,16 +85,20 @@ def build_vector_index(
     llama_index_version = resolve_llama_index_version(config.llama_index_version)
     api = _load_llama_index_api()
     embedding = _resolve_embed_model(config=config, embed_model=embed_model)
+    embedding_strategy = _embedding_strategy_from_model(
+        config=config,
+        embed_model=embed_model,
+        embedding=embedding,
+    )
     documents = [_document_from_chunk(api.Document, chunk) for chunk in chunks]
     vector_store = api.SimpleVectorStore()
     storage_context = api.StorageContext.from_defaults(vector_store=vector_store)
-    node_parser = api.DoclingNodeParser()
 
     index = _index_from_documents(
         api,
         documents,
         storage_context=storage_context,
-        node_parser=node_parser,
+        transformations=[_AnnouncementChunkIdentityTransform()],
         embed_model=embedding,
     )
 
@@ -85,11 +109,7 @@ def build_vector_index(
     return AnnouncementVectorIndexRef(
         index_ref=str(output_dir),
         llama_index_version=llama_index_version,
-        embedding_strategy=_embedding_strategy_from_model(
-            config=config,
-            embed_model=embed_model,
-            embedding=embedding,
-        ),
+        embedding_strategy=embedding_strategy,
         chunk_ids=[chunk.chunk_id for chunk in chunks],
         built_at=datetime.now(timezone.utc),
     )
@@ -108,14 +128,15 @@ def load_vector_index(
     resolve_llama_index_version(llama_index_version)
     api = _load_llama_index_api()
     embedding = _resolve_embed_model(config=config, embed_model=embed_model)
+    actual_embedding_strategy = _embedding_strategy_from_model(
+        config=config,
+        embed_model=embed_model,
+        embedding=embedding,
+    )
     if embedding_strategy is not None:
         _validate_embedding_strategy(
             expected=embedding_strategy,
-            actual=_embedding_strategy_from_model(
-                config=config,
-                embed_model=embed_model,
-                embedding=embedding,
-            ),
+            actual=actual_embedding_strategy,
         )
     storage_context = api.StorageContext.from_defaults(persist_dir=str(persist_dir))
     try:
@@ -156,8 +177,8 @@ def resolve_llama_index_version(version_pin: str) -> str:
     except metadata.PackageNotFoundError as exc:
         raise RuntimeError(
             "LlamaIndex dependency is not installed for the configured exact "
-            f"pin {configured!r}. Install the locked LlamaIndex and "
-            "DoclingNodeParser dependencies before building retrieval indexes."
+            f"pin {configured!r}. Install the locked LlamaIndex core "
+            "dependency before building retrieval indexes."
         ) from exc
     if installed_version != expected_version:
         raise RuntimeError(
@@ -187,14 +208,14 @@ def _index_from_documents(
     documents: Sequence[Any],
     *,
     storage_context: Any,
-    node_parser: Any,
+    transformations: Sequence[Any],
     embed_model: Any,
 ) -> Any:
     try:
         return api.VectorStoreIndex.from_documents(
             documents,
             storage_context=storage_context,
-            transformations=[node_parser],
+            transformations=list(transformations),
             embed_model=embed_model,
         )
     except TypeError:
@@ -203,7 +224,7 @@ def _index_from_documents(
             return api.VectorStoreIndex.from_documents(
                 documents,
                 storage_context=storage_context,
-                transformations=[node_parser],
+                transformations=list(transformations),
             )
         previous_embed_model = getattr(settings, "embed_model", None)
         settings.embed_model = embed_model
@@ -211,7 +232,7 @@ def _index_from_documents(
             return api.VectorStoreIndex.from_documents(
                 documents,
                 storage_context=storage_context,
-                transformations=[node_parser],
+                transformations=list(transformations),
             )
         finally:
             settings.embed_model = previous_embed_model
@@ -246,27 +267,11 @@ def _load_llama_index_api() -> _LlamaIndexApi:
                 "retrieval indexes. Install the exact llama-index-core pin."
             ) from exc
 
-    try:
-        from llama_index.node_parser.docling import (  # type: ignore[import-not-found]
-            DoclingNodeParser,
-        )
-    except (ImportError, ModuleNotFoundError):
-        try:
-            from llama_index.node_parser.docling.base import (  # type: ignore[import-not-found]
-                DoclingNodeParser,
-            )
-        except (ImportError, ModuleNotFoundError) as exc:
-            raise RuntimeError(
-                "LlamaIndex DoclingNodeParser is required for announcement "
-                "retrieval indexes. Install the exact "
-                "llama-index-node-parser-docling pin."
-            ) from exc
     return _LlamaIndexApi(
         Document=Document,
         StorageContext=StorageContext,
         VectorStoreIndex=VectorStoreIndex,
         SimpleVectorStore=SimpleVectorStore,
-        DoclingNodeParser=DoclingNodeParser,
         load_index_from_storage=load_index_from_storage,
     )
 
@@ -369,12 +374,26 @@ def _embedding_strategy_from_model(
         if strategy_type == "adapter" and config is not None
         else None
     )
-    model_ref = _model_ref(embedding)
-    model_version = _string_identity_attr(
+    adapter_identity = (
+        _required_adapter_embedding_identity(embedding, adapter_ref)
+        if strategy_type == "adapter"
+        else None
+    )
+    model_ref = _identity_string_attr(
+        adapter_identity,
+        ("model_ref", "model_id", "model_name", "model"),
+    ) or _model_ref(embedding)
+    model_version = _identity_string_attr(
+        adapter_identity,
+        ("model_version", "version", "revision"),
+    ) or _string_identity_attr(
         embedding,
         ("model_version", "version", "revision", "__version__"),
     )
-    model_dimension = _int_identity_attr(
+    model_dimension = _identity_int_attr(
+        adapter_identity,
+        ("model_dimension", "dimension", "embedding_dim", "dimensions", "embed_dim"),
+    ) or _int_identity_attr(
         embedding,
         ("embed_dim", "embedding_dim", "dimensions", "dimension"),
     )
@@ -384,6 +403,7 @@ def _embedding_strategy_from_model(
         "model_ref": model_ref,
         "model_version": model_version,
         "model_dimension": model_dimension,
+        "adapter_identity": adapter_identity,
         "identity_attributes": _embedding_identity_attrs(embedding),
     }
     fingerprint = hashlib.sha256(
@@ -414,6 +434,65 @@ def _embedding_strategy_type(
     if config is not None and config.retrieval_embedding_adapter is not None:
         return "adapter"
     return "test_mock"
+
+
+def _required_adapter_embedding_identity(
+    embedding: Any,
+    adapter_ref: str | None,
+) -> dict[str, Any]:
+    identity_fn = getattr(embedding, "embedding_identity", None)
+    if not callable(identity_fn):
+        raise RuntimeError(
+            "Retrieval embedding adapter models must expose "
+            "embedding_identity() with stable model/config identity: "
+            f"adapter={adapter_ref!r} model={_model_ref(embedding)!r}."
+        )
+    try:
+        raw_identity = identity_fn()
+    except Exception as exc:
+        raise RuntimeError(
+            "Retrieval embedding adapter embedding_identity() failed: "
+            f"adapter={adapter_ref!r} model={_model_ref(embedding)!r}."
+        ) from exc
+    if not isinstance(raw_identity, Mapping) or not raw_identity:
+        raise RuntimeError(
+            "Retrieval embedding adapter embedding_identity() must return a "
+            "non-empty mapping with stable model/config identity: "
+            f"adapter={adapter_ref!r} model={_model_ref(embedding)!r}."
+        )
+    return _stable_identity_mapping(raw_identity, path="embedding_identity")
+
+
+def _stable_identity_mapping(
+    value: Mapping[Any, Any],
+    *,
+    path: str,
+) -> dict[str, Any]:
+    stable: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise RuntimeError(f"{path} keys must be non-empty strings")
+        stable[key] = _stable_identity_value(item, path=f"{path}.{key}")
+    return stable
+
+
+def _stable_identity_value(value: Any, *, path: str) -> Any:
+    if isinstance(value, str | bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise RuntimeError(f"{path} must be a finite float")
+        return value
+    if isinstance(value, Mapping):
+        return _stable_identity_mapping(value, path=path)
+    if isinstance(value, list | tuple):
+        return [_stable_identity_value(item, path=path) for item in value]
+    raise RuntimeError(
+        f"{path} contains unsupported identity value "
+        f"{type(value).__name__}; use JSON-compatible scalars, lists, or mappings"
+    )
 
 
 def _validate_embedding_strategy(
@@ -469,6 +548,34 @@ def _embedding_identity_attrs(value: Any) -> dict[str, str | int | float | bool 
         if isinstance(attr_value, str | int | float | bool) or attr_value is None:
             attrs[name] = attr_value
     return attrs
+
+
+def _identity_string_attr(
+    value: Mapping[str, Any] | None,
+    names: tuple[str, ...],
+) -> str | None:
+    if value is None:
+        return None
+    for name in names:
+        attr_value = value.get(name)
+        if isinstance(attr_value, str) and attr_value.strip():
+            return attr_value.strip()
+    return None
+
+
+def _identity_int_attr(
+    value: Mapping[str, Any] | None,
+    names: tuple[str, ...],
+) -> int | None:
+    if value is None:
+        return None
+    for name in names:
+        attr_value = value.get(name)
+        if isinstance(attr_value, bool):
+            continue
+        if isinstance(attr_value, int) and attr_value > 0:
+            return attr_value
+    return None
 
 
 def _string_identity_attr(value: Any, names: tuple[str, ...]) -> str | None:

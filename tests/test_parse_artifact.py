@@ -80,6 +80,15 @@ def test_docling_dependency_is_exactly_pinned() -> None:
     assert not any(dependency.startswith("docling>=") for dependency in dependencies)
 
 
+def test_docling_node_parser_dependency_is_not_declared() -> None:
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = pyproject["project"]["dependencies"]
+
+    assert "llama-index-node-parser-docling" not in {
+        dependency.split("==", 1)[0].split(">=", 1)[0] for dependency in dependencies
+    }
+
+
 def test_parsed_artifact_round_trips_to_disk(tmp_path: Path) -> None:
     source_path = tmp_path / "ann-1.pdf"
     source_path.write_bytes(b"%PDF fixture")
