@@ -74,8 +74,12 @@ def test_docling_dependency_is_exactly_pinned() -> None:
     dependencies = _all_declared_dependencies(pyproject)
 
     assert "docling==2.15.1" in dependencies
+    assert "docling-core==2.13.1" in dependencies
     assert "llama-index-core==0.10.0" in dependencies
     assert not any(dependency.startswith("docling>=") for dependency in dependencies)
+    assert not any(
+        dependency.startswith("docling-core>=") for dependency in dependencies
+    )
     assert not any(
         dependency.startswith("docling-core<2") for dependency in dependencies
     )
