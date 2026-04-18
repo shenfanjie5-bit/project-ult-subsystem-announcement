@@ -31,6 +31,11 @@ from subsystem_announcement.graph import (
     GraphFunc,
     derive_graph_delta_candidates,
 )
+from subsystem_announcement.index import (
+    AnnouncementRetrievalArtifact,
+    build_retrieval_artifact,
+    write_retrieval_artifact,
+)
 from subsystem_announcement.parse import ParsedAnnouncementArtifact, parse_announcement
 from subsystem_announcement.parse.artifact import write_parsed_artifact
 from subsystem_announcement.signals import (
@@ -68,6 +73,10 @@ ExtractFunc = Callable[
     ...,
     Sequence[AnnouncementFactCandidate] | Awaitable[Sequence[AnnouncementFactCandidate]],
 ]
+BuildRetrievalFunc = Callable[
+    ...,
+    AnnouncementRetrievalArtifact | Awaitable[AnnouncementRetrievalArtifact],
+]
 
 
 class AnnouncementPipeline:
@@ -80,6 +89,7 @@ class AnnouncementPipeline:
         subsystem: AnnouncementSubsystem | None = None,
         discovery_func: DiscoveryFunc = consume_announcement_ref,
         parse_func: ParseFunc = parse_announcement,
+        build_retrieval_func: BuildRetrievalFunc = build_retrieval_artifact,
         extract_func: ExtractFunc = extract_fact_candidates,
         signal_func: SignalFunc = derive_signal_candidates,
         graph_func: GraphFunc = derive_graph_delta_candidates,
@@ -90,6 +100,7 @@ class AnnouncementPipeline:
         self._subsystem = subsystem
         self._discovery_func = discovery_func
         self._parse_func = parse_func
+        self._build_retrieval_func = build_retrieval_func
         self._extract_func = extract_func
         self._signal_func = signal_func
         self._graph_func = graph_func
@@ -120,6 +131,21 @@ class AnnouncementPipeline:
                 parsed_artifact,
                 self.config.artifact_root,
             )
+            run.index_build_status = "running"
+            try:
+                retrieval_artifact = await self._call_build_retrieval(
+                    parsed_artifact,
+                    run.parsed_artifact_path,
+                )
+                run.retrieval_artifact_path = write_retrieval_artifact(
+                    retrieval_artifact,
+                    Path(self.config.artifact_root)
+                    / "index"
+                    / parsed_artifact.announcement_id,
+                )
+                run.index_build_status = "succeeded"
+            except RuntimeError:
+                run.index_build_status = "pending"
 
             facts = list(await self._call_extract(parsed_artifact))
             signals = list(await self._call_signals(facts))
@@ -147,6 +173,8 @@ class AnnouncementPipeline:
             )
         except Exception as exc:
             run.status = "failed"
+            if run.index_build_status == "running":
+                run.index_build_status = "failed"
             run.errors.append(
                 RunTraceError(stage=_stage_for_run(run), message=str(exc))
             )
@@ -166,6 +194,19 @@ class AnnouncementPipeline:
         document: AnnouncementDocumentArtifact,
     ) -> ParsedAnnouncementArtifact:
         return await _maybe_await(self._parse_func(document, self.config))
+
+    async def _call_build_retrieval(
+        self,
+        artifact: ParsedAnnouncementArtifact,
+        parsed_artifact_path: Path,
+    ) -> AnnouncementRetrievalArtifact:
+        return await _maybe_await(
+            self._build_retrieval_func(
+                artifact,
+                config=self.config,
+                parsed_artifact_path=parsed_artifact_path,
+            )
+        )
 
     async def _call_extract(
         self,
@@ -438,6 +479,8 @@ def _stage_for_run(run: AnnouncementExtractionRun) -> str:
         return "discovery"
     if run.parsed_artifact_path is None:
         return "parse"
+    if run.index_build_status in {"running", "failed"}:
+        return "index"
     if run.candidate_count == 0 and not run.candidate_traces:
         return "extract"
     return "submit"
