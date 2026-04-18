@@ -5,7 +5,13 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
-from subsystem_announcement.extract import AnnouncementFactCandidate, extract_fact_candidates
+from subsystem_announcement.extract import (
+    AnnouncementFactCandidate,
+    EvidenceSpan,
+    FactType,
+    extract_fact_candidates,
+)
+from subsystem_announcement.graph import derive_graph_delta_candidates
 from subsystem_announcement.runtime import submit as submit_module
 from subsystem_announcement.runtime.submit import (
     SubmitIdempotencyStore,
@@ -228,6 +234,44 @@ def test_submit_candidates_records_rejected_result_as_failure() -> None:
     assert "contract still rejected" in result.failures[0].errors[-1]
 
 
+def test_submit_candidates_skips_same_batch_dependents_when_ex1_rejected() -> None:
+    fact = _graph_fact("ann-direct-submit-rejected-dependency")
+    generated_at = datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc)
+    signal = derive_signal_candidates([fact], generated_at=generated_at)[0]
+    delta = derive_graph_delta_candidates([fact], generated_at=generated_at)[0]
+    subsystem = RecordingSubsystem(
+        [
+            _rejected("receipt-rejected", "fact rejected"),
+            _accepted("signal-should-not-submit"),
+            _accepted("delta-should-not-submit"),
+        ]
+    )
+
+    result = submit_candidates(
+        [fact, signal, delta],
+        subsystem,  # type: ignore[arg-type]
+        max_attempts=1,
+    )
+
+    assert result.submitted == 0
+    assert result.failed == 3
+    assert [payload["ex_type"] for payload in subsystem.submissions] == ["Ex-1"]
+    assert [trace.ex_type for trace in result.traces] == ["Ex-1", "Ex-2", "Ex-3"]
+    assert [trace.status for trace in result.traces] == [
+        "failed",
+        "failed",
+        "failed",
+    ]
+    assert result.traces[1].attempts == 0
+    assert result.traces[2].attempts == 0
+    assert "source_fact_ids are not accepted Ex-1 facts" in (
+        result.traces[1].errors[0]
+    )
+    assert "source_fact_ids are not accepted Ex-1 facts" in (
+        result.traces[2].errors[0]
+    )
+
+
 def test_submit_candidates_rejects_invalid_payload_before_sdk_call() -> None:
     fact = _fact("ann-invalid")
     invalid = fact.model_copy(update={"evidence_spans": []})
@@ -295,6 +339,40 @@ def _fact(announcement_id: str) -> AnnouncementFactCandidate:
         announcement_id=announcement_id,
     )
     return extract_fact_candidates(artifact)[0]
+
+
+def _graph_fact(announcement_id: str) -> AnnouncementFactCandidate:
+    return AnnouncementFactCandidate(
+        fact_id=f"fact:{announcement_id}:major_contract:1",
+        announcement_id=announcement_id,
+        fact_type=FactType.MAJOR_CONTRACT,
+        primary_entity_id="ts_code:600000.SH",
+        related_entity_ids=["entity:huadong-energy"],
+        fact_content={"event": "major_contract"},
+        confidence=0.93,
+        source_reference={
+            "announcement_id": announcement_id,
+            "official_url": (
+                f"https://static.sse.com.cn/disclosure/{announcement_id}.pdf"
+            ),
+            "source_exchange": "sse",
+            "attachment_type": "pdf",
+        },
+        evidence_spans=[
+            _span("公司与华东能源签订重大合同。", "sec-1"),
+            _span("双方合同金额为1000万元。", "sec-2"),
+        ],
+        extracted_at=datetime(2026, 4, 18, 9, 30, tzinfo=timezone.utc),
+    )
+
+
+def _span(quote: str, section_id: str) -> EvidenceSpan:
+    return EvidenceSpan(
+        section_id=section_id,
+        start_offset=0,
+        end_offset=len(quote),
+        quote=quote,
+    )
 
 
 def _accepted(receipt_id: str) -> dict[str, Any]:
