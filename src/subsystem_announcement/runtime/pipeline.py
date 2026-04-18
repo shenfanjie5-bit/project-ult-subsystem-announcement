@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Sequence
+import importlib
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,11 @@ from subsystem_announcement.discovery import (
 from subsystem_announcement.discovery.document import AnnouncementDocumentArtifact
 from subsystem_announcement.extract import (
     AnnouncementFactCandidate,
+    EntityMention,
+    EntityRegistryClient,
+    EntityResolution,
+    ReasonerRuntimeBridge,
+    StructuredReasoner,
     extract_fact_candidates,
 )
 from subsystem_announcement.parse import ParsedAnnouncementArtifact, parse_announcement
@@ -37,7 +43,7 @@ ParseFunc = Callable[
     ParsedAnnouncementArtifact | Awaitable[ParsedAnnouncementArtifact],
 ]
 ExtractFunc = Callable[
-    [ParsedAnnouncementArtifact],
+    ...,
     Sequence[AnnouncementFactCandidate] | Awaitable[Sequence[AnnouncementFactCandidate]],
 ]
 
@@ -61,6 +67,8 @@ class AnnouncementPipeline:
         self._discovery_func = discovery_func
         self._parse_func = parse_func
         self._extract_func = extract_func
+        self._entity_registry = _build_entity_registry(config)
+        self._reasoner = _build_reasoner(config)
         self._idempotency_store = idempotency_store or SubmitIdempotencyStore(
             Path(config.artifact_root) / "runs" / "submit_idempotency.json"
         )
@@ -130,7 +138,13 @@ class AnnouncementPipeline:
         self,
         artifact: ParsedAnnouncementArtifact,
     ) -> Sequence[AnnouncementFactCandidate]:
-        return await _maybe_await(self._extract_func(artifact))
+        kwargs: dict[str, Any] = {}
+        if self._entity_registry is not None:
+            kwargs["entity_registry"] = self._entity_registry
+        if self._reasoner is not None:
+            kwargs["reasoner"] = self._reasoner
+        supported_kwargs = _supported_extract_kwargs(self._extract_func, kwargs)
+        return await _maybe_await(self._extract_func(artifact, **supported_kwargs))
 
     def _get_subsystem(self) -> AnnouncementSubsystem:
         if self._subsystem is None:
@@ -138,10 +152,99 @@ class AnnouncementPipeline:
         return self._subsystem
 
 
+class EntityRegistryRuntimeAdapter:
+    """Adapter around the entity-registry runtime module."""
+
+    def __init__(self, *, endpoint: str | None = None) -> None:
+        self.endpoint = endpoint
+
+    def lookup_alias(self, name: str) -> EntityResolution | Mapping[str, Any] | None:
+        """Resolve a deterministic alias through entity-registry."""
+
+        return self._call_runtime("lookup_alias", name)
+
+    def resolve_mentions(
+        self,
+        mentions: Sequence[EntityMention],
+    ) -> Sequence[EntityResolution | Mapping[str, Any]]:
+        """Resolve fuzzy mentions through entity-registry."""
+
+        payload = [mention.model_dump(mode="json") for mention in mentions]
+        result = self._call_runtime("resolve_mentions", payload)
+        if result is None:
+            return []
+        if isinstance(result, Sequence) and not isinstance(
+            result,
+            str | bytes | bytearray,
+        ):
+            return result
+        raise TypeError("entity_registry.resolve_mentions returned non-sequence")
+
+    def _call_runtime(self, function_name: str, *args: Any) -> Any:
+        try:
+            entity_registry = importlib.import_module("entity_registry")
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "entity-registry endpoint is configured but "
+                "the entity_registry runtime module is not importable"
+            ) from exc
+        runtime_func = getattr(entity_registry, function_name, None)
+        if not callable(runtime_func):
+            raise RuntimeError(f"entity_registry.{function_name} is not callable")
+        if _accepts_keyword(runtime_func, "endpoint") and self.endpoint is not None:
+            return runtime_func(*args, endpoint=self.endpoint)
+        return runtime_func(*args)
+
+
 async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def _build_entity_registry(
+    config: AnnouncementConfig,
+) -> EntityRegistryClient | None:
+    if config.entity_registry_endpoint is None:
+        return None
+    return EntityRegistryRuntimeAdapter(endpoint=config.entity_registry_endpoint)
+
+
+def _build_reasoner(config: AnnouncementConfig) -> StructuredReasoner | None:
+    if config.reasoner_endpoint is None:
+        return None
+    return ReasonerRuntimeBridge(endpoint=config.reasoner_endpoint)
+
+
+def _supported_extract_kwargs(
+    extract_func: ExtractFunc,
+    kwargs: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        name: value
+        for name, value in kwargs.items()
+        if _accepts_keyword(extract_func, name)
+    }
+
+
+def _accepts_keyword(func: Callable[..., Any], name: str) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return True
+    parameters = signature.parameters
+    if any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return True
+    parameter = parameters.get(name)
+    if parameter is None:
+        return False
+    return parameter.kind in {
+        inspect.Parameter.KEYWORD_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    }
 
 
 def _apply_submit_result(
