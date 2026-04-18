@@ -4,8 +4,10 @@ import asyncio
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -20,6 +22,7 @@ from subsystem_announcement.runtime.sdk_adapter import (
     AnnouncementSubsystem,
     SDK_AVAILABLE,
     SubsystemSdkUnavailableError,
+    UnsupportedSubsystemSdkError,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +38,15 @@ def _cli_env() -> dict[str, str]:
         else os.pathsep.join([str(SRC), existing_pythonpath])
     )
     return env
+
+
+def _assert_cli_requires_sdk_or_backend(result: subprocess.CompletedProcess[str]) -> None:
+    assert result.returncode == 1
+    assert result.stdout.strip() == ""
+    if SDK_AVAILABLE:
+        assert "sdk_endpoint is unset" in result.stderr
+    else:
+        assert "subsystem-sdk is required" in result.stderr
 
 
 def test_registration_spec_contains_module_ex_types_and_parser_version() -> None:
@@ -263,8 +275,8 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
         return FakeSubmitReceipt(
             accepted=True,
             receipt_id="heartbeat-receipt",
-            backend_kind="mock",
-            transport_ref=None,
+            backend_kind="lite_pg",
+            transport_ref="heartbeat-transport",
             validator_version="validator-v1",
         )
 
@@ -273,8 +285,8 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
         return FakeSubmitReceipt(
             accepted=True,
             receipt_id="sdk-receipt",
-            backend_kind="mock",
-            transport_ref=None,
+            backend_kind="lite_pg",
+            transport_ref="submit-transport",
             validator_version="validator-v1",
         )
 
@@ -343,6 +355,356 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
     assert "reason" not in submit_payload
 
 
+def test_real_sdk_mode_uses_preconfigured_runtime_without_building_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    configured_runtime = object()
+
+    class RuntimeNotConfiguredError(RuntimeError):
+        pass
+
+    class FakeBase:
+        pass
+
+    class FakeRegistrationSpec:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.kwargs = kwargs
+
+    class FakeSubmitReceipt:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.accepted = kwargs["accepted"]
+            self.receipt_id = kwargs["receipt_id"]
+            self.backend_kind = kwargs["backend_kind"]
+            self.transport_ref = kwargs["transport_ref"]
+            self.validator_version = kwargs["validator_version"]
+            self.warnings = tuple(kwargs.get("warnings", ()))
+            self.errors = tuple(kwargs.get("errors", ()))
+
+    def register_subsystem(spec):  # type: ignore[no-untyped-def]
+        calls.append(("register", spec.kwargs))
+
+    def get_runtime():  # type: ignore[no-untyped-def]
+        return configured_runtime
+
+    def configure_runtime(context):  # type: ignore[no-untyped-def]
+        raise AssertionError("preconfigured SDK runtime should be reused")
+
+    def build_submit_backend(config):  # type: ignore[no-untyped-def]
+        raise AssertionError("preconfigured SDK runtime should own the backend")
+
+    def send_heartbeat(payload):  # type: ignore[no-untyped-def]
+        calls.append(("heartbeat", payload))
+        return FakeSubmitReceipt(
+            accepted=True,
+            receipt_id="heartbeat-receipt",
+            backend_kind="lite_pg",
+            transport_ref="heartbeat-transport",
+            validator_version="validator-v1",
+        )
+
+    def submit(payload):  # type: ignore[no-untyped-def]
+        calls.append(("submit", payload))
+        return FakeSubmitReceipt(
+            accepted=True,
+            receipt_id="sdk-receipt",
+            backend_kind="lite_pg",
+            transport_ref="submit-transport",
+            validator_version="validator-v1",
+        )
+
+    def assert_producer_only(ex_type, payload):  # type: ignore[no-untyped-def]
+        calls.append(("validate", (ex_type, payload)))
+
+    fake_api = sdk_adapter._SdkApi(
+        subsystem_base_interface=FakeBase,
+        registration_spec=FakeRegistrationSpec,
+        submit_receipt=FakeSubmitReceipt,
+        register_subsystem=register_subsystem,
+        send_heartbeat=send_heartbeat,
+        submit=submit,
+        assert_producer_only=assert_producer_only,
+        configure_runtime=configure_runtime,
+        get_runtime=get_runtime,
+        runtime_not_configured_error=RuntimeNotConfiguredError,
+        build_submit_backend=build_submit_backend,
+    )
+    monkeypatch.setattr(sdk_adapter, "SDK_AVAILABLE", True)
+    monkeypatch.setattr(sdk_adapter, "_SDK_API", fake_api)
+    subsystem = AnnouncementSubsystem(AnnouncementConfig())
+
+    subsystem.on_register()
+    subsystem.on_heartbeat()
+    result = subsystem.submit(build_ex0_envelope(subsystem.run_id, "test"))
+
+    assert result.accepted is True
+    assert result.backend_kind == "lite_pg"
+    assert (
+        "heartbeat",
+        {"status": "healthy", "last_output_at": None, "pending_count": 0},
+    ) in calls
+    submit_calls = [call for call in calls if call[0] == "submit"]
+    assert len(submit_calls) == 1
+
+
+def test_real_sdk_mode_builds_non_mock_backend_from_sdk_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    active_context: Any | None = None
+
+    class RuntimeNotConfiguredError(RuntimeError):
+        pass
+
+    class FakeBase:
+        pass
+
+    class FakeRegistrationSpec:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.kwargs = kwargs
+
+    class FakeSubmitReceipt:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.accepted = kwargs["accepted"]
+            self.receipt_id = kwargs["receipt_id"]
+            self.backend_kind = kwargs["backend_kind"]
+            self.transport_ref = kwargs["transport_ref"]
+            self.validator_version = kwargs["validator_version"]
+            self.warnings = tuple(kwargs.get("warnings", ()))
+            self.errors = tuple(kwargs.get("errors", ()))
+
+    class FakeSubmitBackendConfig:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.backend_kind = kwargs["backend_kind"]
+            self.dsn = kwargs.get("dsn")
+
+    class FakeRealSubmitBackend:
+        backend_kind = "lite_pg"
+
+        def __init__(self) -> None:
+            self.submitted_payloads: list[dict[str, Any]] = []
+
+        def submit(self, payload):  # type: ignore[no-untyped-def]
+            self.submitted_payloads.append(dict(payload))
+            return {
+                "accepted": True,
+                "receipt_id": f"receipt-{len(self.submitted_payloads)}",
+                "transport_ref": f"queue-{len(self.submitted_payloads)}",
+                "warnings": (),
+                "errors": (),
+            }
+
+    class FakeSubmitClient:
+        def __init__(self, backend, validator):  # type: ignore[no-untyped-def]
+            self.backend = backend
+
+        def submit(self, payload):  # type: ignore[no-untyped-def]
+            backend_receipt = self.backend.submit(payload)
+            return FakeSubmitReceipt(
+                accepted=backend_receipt["accepted"],
+                receipt_id=backend_receipt["receipt_id"],
+                backend_kind=self.backend.backend_kind,
+                transport_ref=backend_receipt["transport_ref"],
+                validator_version="validator-v1",
+                warnings=backend_receipt["warnings"],
+                errors=backend_receipt["errors"],
+            )
+
+    class FakeHeartbeatAdapter:
+        def __init__(self, backend):  # type: ignore[no-untyped-def]
+            self.backend = backend
+            self.backend_kind = backend.backend_kind
+
+        def send(self, payload):  # type: ignore[no-untyped-def]
+            return self.backend.submit(payload)
+
+    class FakeHeartbeatClient:
+        def __init__(self, backend, validator):  # type: ignore[no-untyped-def]
+            self.backend = backend
+
+        def send_heartbeat(self, payload):  # type: ignore[no-untyped-def]
+            backend_receipt = self.backend.send(payload)
+            return FakeSubmitReceipt(
+                accepted=backend_receipt["accepted"],
+                receipt_id=backend_receipt["receipt_id"],
+                backend_kind=self.backend.backend_kind,
+                transport_ref=backend_receipt["transport_ref"],
+                validator_version="validator-v1",
+                warnings=backend_receipt["warnings"],
+                errors=backend_receipt["errors"],
+            )
+
+    class FakeBaseSubsystemContext:
+        def __init__(
+            self,
+            *,
+            registration,
+            submit_client,
+            heartbeat_client,
+            validator,
+        ):  # type: ignore[no-untyped-def]
+            self.registration = registration
+            self.submit_client = submit_client
+            self.heartbeat_client = heartbeat_client
+            self.validator = validator
+
+        def submit(self, payload):  # type: ignore[no-untyped-def]
+            return self.submit_client.submit(payload)
+
+        def send_heartbeat(self, status):  # type: ignore[no-untyped-def]
+            payload = {
+                "ex_type": "Ex-0",
+                "semantic": "metadata_or_heartbeat",
+                "subsystem_id": self.registration.kwargs["subsystem_id"],
+                "version": self.registration.kwargs["version"],
+                "heartbeat_at": datetime.now(timezone.utc),
+                **status,
+            }
+            return self.heartbeat_client.send_heartbeat(payload)
+
+    backend = FakeRealSubmitBackend()
+
+    def register_subsystem(spec):  # type: ignore[no-untyped-def]
+        calls.append(("register", spec.kwargs))
+
+    def get_runtime():  # type: ignore[no-untyped-def]
+        if active_context is None:
+            raise RuntimeNotConfiguredError()
+        return active_context
+
+    @contextmanager
+    def configure_runtime(context):  # type: ignore[no-untyped-def]
+        nonlocal active_context
+        assert active_context is None
+        active_context = context
+        try:
+            yield context
+        finally:
+            active_context = None
+
+    def build_submit_backend(config):  # type: ignore[no-untyped-def]
+        calls.append(("build_backend", (config.backend_kind, config.dsn)))
+        return backend
+
+    def send_heartbeat(payload):  # type: ignore[no-untyped-def]
+        return get_runtime().send_heartbeat(payload)
+
+    def submit(payload):  # type: ignore[no-untyped-def]
+        return get_runtime().submit(payload)
+
+    def assert_producer_only(ex_type, payload):  # type: ignore[no-untyped-def]
+        calls.append(("validate", (ex_type, payload["ex_type"])))
+
+    fake_api = sdk_adapter._SdkApi(
+        subsystem_base_interface=FakeBase,
+        registration_spec=FakeRegistrationSpec,
+        submit_receipt=FakeSubmitReceipt,
+        register_subsystem=register_subsystem,
+        send_heartbeat=send_heartbeat,
+        submit=submit,
+        assert_producer_only=assert_producer_only,
+        base_subsystem_context=FakeBaseSubsystemContext,
+        configure_runtime=configure_runtime,
+        get_runtime=get_runtime,
+        runtime_not_configured_error=RuntimeNotConfiguredError,
+        submit_client=FakeSubmitClient,
+        heartbeat_client=FakeHeartbeatClient,
+        submit_backend_config=FakeSubmitBackendConfig,
+        build_submit_backend=build_submit_backend,
+        submit_backend_heartbeat_adapter=FakeHeartbeatAdapter,
+        validation_result=object,
+    )
+    monkeypatch.setattr(sdk_adapter, "SDK_AVAILABLE", True)
+    monkeypatch.setattr(sdk_adapter, "_SDK_API", fake_api)
+    subsystem = AnnouncementSubsystem(
+        AnnouncementConfig(sdk_endpoint="postgresql://sdk.local/announcements")
+    )
+
+    subsystem.on_register()
+    subsystem.on_heartbeat()
+    result = subsystem.submit(build_ex0_envelope(subsystem.run_id, "test"))
+
+    assert result.accepted is True
+    assert result.backend_kind == "lite_pg"
+    assert result.transport_ref == "queue-2"
+    assert calls.count(
+        (
+            "build_backend",
+            ("lite_pg", "postgresql://sdk.local/announcements"),
+        )
+    ) == 1
+    assert [payload["ex_type"] for payload in backend.submitted_payloads] == [
+        "Ex-0",
+        "Ex-0",
+    ]
+    assert backend.backend_kind != "mock"
+
+
+def test_real_sdk_mode_rejects_mock_backend_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RuntimeNotConfiguredError(RuntimeError):
+        pass
+
+    class FakeBase:
+        pass
+
+    class FakeRegistrationSpec:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.kwargs = kwargs
+
+    class FakeSubmitReceipt:
+        pass
+
+    class FakeValidationResult:
+        pass
+
+    class FakeBackendConfig:
+        backend_kind = "mock"
+
+    def register_subsystem(spec):  # type: ignore[no-untyped-def]
+        return None
+
+    def get_runtime():  # type: ignore[no-untyped-def]
+        raise RuntimeNotConfiguredError()
+
+    def build_submit_backend(config):  # type: ignore[no-untyped-def]
+        raise AssertionError("mock backend config must be rejected before build")
+
+    def load_submit_backend_config(path):  # type: ignore[no-untyped-def]
+        assert path == Path("sdk-backend.toml")
+        return FakeBackendConfig()
+
+    fake_api = sdk_adapter._SdkApi(
+        subsystem_base_interface=FakeBase,
+        registration_spec=FakeRegistrationSpec,
+        submit_receipt=FakeSubmitReceipt,
+        register_subsystem=register_subsystem,
+        send_heartbeat=lambda payload: None,
+        submit=lambda payload: None,
+        assert_producer_only=lambda ex_type, payload: None,
+        base_subsystem_context=object,
+        configure_runtime=lambda context: context,
+        get_runtime=get_runtime,
+        runtime_not_configured_error=RuntimeNotConfiguredError,
+        submit_client=object,
+        heartbeat_client=object,
+        submit_backend_config=object,
+        build_submit_backend=build_submit_backend,
+        load_submit_backend_config=load_submit_backend_config,
+        submit_backend_heartbeat_adapter=object,
+        validation_result=FakeValidationResult,
+    )
+    monkeypatch.setattr(sdk_adapter, "SDK_AVAILABLE", True)
+    monkeypatch.setattr(sdk_adapter, "_SDK_API", fake_api)
+    subsystem = AnnouncementSubsystem(
+        AnnouncementConfig(sdk_endpoint="sdk-backend.toml")
+    )
+
+    with pytest.raises(UnsupportedSubsystemSdkError, match="backend_kind='mock'"):
+        subsystem.submit(build_ex0_envelope(subsystem.run_id, "test"))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -364,7 +726,7 @@ def test_load_config_rejects_non_positive_runtime_intervals(
         load_config(config_path)
 
 
-def test_cli_ping_uses_sdk_when_available_and_fails_without_it() -> None:
+def test_cli_ping_requires_sdk_backend_when_sdk_is_available() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "subsystem_announcement", "ping"],
         cwd=ROOT,
@@ -374,17 +736,10 @@ def test_cli_ping_uses_sdk_when_available_and_fails_without_it() -> None:
         text=True,
     )
 
-    if SDK_AVAILABLE:
-        assert result.returncode == 0
-        assert result.stdout.strip() == "ok"
-        assert result.stderr == ""
-    else:
-        assert result.returncode == 1
-        assert result.stdout.strip() == ""
-        assert "subsystem-sdk is required" in result.stderr
+    _assert_cli_requires_sdk_or_backend(result)
 
 
-def test_cli_ping_ignores_legacy_stub_env_and_uses_or_requires_sdk() -> None:
+def test_cli_ping_ignores_legacy_stub_env_and_requires_sdk_backend() -> None:
     env = _cli_env()
     env["SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB"] = "1"
 
@@ -397,17 +752,10 @@ def test_cli_ping_ignores_legacy_stub_env_and_uses_or_requires_sdk() -> None:
         text=True,
     )
 
-    if SDK_AVAILABLE:
-        assert result.returncode == 0
-        assert result.stdout.strip() == "ok"
-        assert result.stderr == ""
-    else:
-        assert result.returncode == 1
-        assert result.stdout.strip() == ""
-        assert "subsystem-sdk is required" in result.stderr
+    _assert_cli_requires_sdk_or_backend(result)
 
 
-def test_cli_run_once_uses_sdk_when_available_and_fails_without_it() -> None:
+def test_cli_run_once_requires_sdk_backend_when_sdk_is_available() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "subsystem_announcement", "run", "--once"],
         cwd=ROOT,
@@ -417,11 +765,4 @@ def test_cli_run_once_uses_sdk_when_available_and_fails_without_it() -> None:
         text=True,
     )
 
-    if SDK_AVAILABLE:
-        assert result.returncode == 0
-        assert result.stdout.strip() == "ok"
-        assert result.stderr == ""
-    else:
-        assert result.returncode == 1
-        assert result.stdout.strip() == ""
-        assert "subsystem-sdk is required" in result.stderr
+    _assert_cli_requires_sdk_or_backend(result)

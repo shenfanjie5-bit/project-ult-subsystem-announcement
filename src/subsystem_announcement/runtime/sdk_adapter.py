@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Final, TypeAlias
 from uuid import uuid4
 
@@ -47,9 +48,13 @@ class _SdkApi:
     assert_producer_only: Any
     base_subsystem_context: type[Any] | None = None
     configure_runtime: Any | None = None
+    get_runtime: Any | None = None
+    runtime_not_configured_error: type[Exception] | None = None
     submit_client: type[Any] | None = None
     heartbeat_client: type[Any] | None = None
-    mock_submit_backend: type[Any] | None = None
+    submit_backend_config: type[Any] | None = None
+    build_submit_backend: Any | None = None
+    load_submit_backend_config: Any | None = None
     submit_backend_heartbeat_adapter: type[Any] | None = None
     validation_result: type[Any] | None = None
 
@@ -64,6 +69,7 @@ def _load_official_sdk_api() -> _SdkApi | None:
         heartbeat_module = importlib.import_module("subsystem_sdk.heartbeat")
         validate_module = importlib.import_module("subsystem_sdk.validate")
         backends_module = importlib.import_module("subsystem_sdk.backends")
+        runtime_module = importlib.import_module("subsystem_sdk.base.runtime")
         return _SdkApi(
             subsystem_base_interface=_required_symbol(
                 base_module,
@@ -86,9 +92,25 @@ def _load_official_sdk_api() -> _SdkApi | None:
                 "BaseSubsystemContext",
             ),
             configure_runtime=_required_symbol(base_module, "configure_runtime"),
+            get_runtime=_required_symbol(runtime_module, "get_runtime"),
+            runtime_not_configured_error=_required_symbol(
+                base_module,
+                "RuntimeNotConfiguredError",
+            ),
             submit_client=_required_symbol(submit_module, "SubmitClient"),
             heartbeat_client=_required_symbol(heartbeat_module, "HeartbeatClient"),
-            mock_submit_backend=_required_symbol(backends_module, "MockSubmitBackend"),
+            submit_backend_config=_required_symbol(
+                backends_module,
+                "SubmitBackendConfig",
+            ),
+            build_submit_backend=_required_symbol(
+                backends_module,
+                "build_submit_backend",
+            ),
+            load_submit_backend_config=_required_symbol(
+                base_module,
+                "load_submit_backend_config",
+            ),
             submit_backend_heartbeat_adapter=_required_symbol(
                 backends_module,
                 "SubmitBackendHeartbeatAdapter",
@@ -99,10 +121,12 @@ def _load_official_sdk_api() -> _SdkApi | None:
         raise UnsupportedSubsystemSdkError(
             "Unsupported subsystem-sdk version: expected pinned public API "
             "subsystem_sdk.base.{BaseSubsystemContext,SubsystemBaseInterface,"
-            "SubsystemRegistrationSpec,configure_runtime,register_subsystem}, "
+            "SubsystemRegistrationSpec,RuntimeNotConfiguredError,"
+            "configure_runtime,load_submit_backend_config,register_subsystem}, "
+            "subsystem_sdk.base.runtime.get_runtime, "
             "subsystem_sdk.submit.{SubmitClient,SubmitReceipt,submit}, "
             "subsystem_sdk.heartbeat.{HeartbeatClient,send_heartbeat}, "
-            "subsystem_sdk.backends.{MockSubmitBackend,"
+            "subsystem_sdk.backends.{SubmitBackendConfig,build_submit_backend,"
             "SubmitBackendHeartbeatAdapter}, and "
             "subsystem_sdk.validate.{ValidationResult,assert_producer_only}."
         ) from exc
@@ -211,6 +235,8 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
 
     def _sdk_runtime_scope(self) -> Any:
         api = _require_sdk_api()
+        if _get_configured_sdk_runtime(api) is not None:
+            return nullcontext()
         context = self._ensure_sdk_context()
         if context is None or api.configure_runtime is None:
             return nullcontext()
@@ -225,7 +251,8 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
             api.base_subsystem_context,
             api.submit_client,
             api.heartbeat_client,
-            api.mock_submit_backend,
+            api.submit_backend_config,
+            api.build_submit_backend,
             api.submit_backend_heartbeat_adapter,
             api.validation_result,
         )
@@ -240,7 +267,7 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
                 self.config,
             )
 
-        submit_backend = api.mock_submit_backend()
+        submit_backend = _build_sdk_submit_backend(api, self.config)
         submit_client = api.submit_client(
             submit_backend,
             validator=_sdk_validate_payload,
@@ -256,6 +283,82 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
             validator=_sdk_validate_payload,
         )
         return self._sdk_context
+
+
+_BACKEND_CONFIG_SUFFIXES: Final[frozenset[str]] = frozenset(
+    {".json", ".toml", ".yaml", ".yml"}
+)
+
+
+def _get_configured_sdk_runtime(api: _SdkApi) -> Any | None:
+    if api.get_runtime is None:
+        return None
+    try:
+        return api.get_runtime()
+    except Exception as exc:
+        runtime_error = api.runtime_not_configured_error
+        if runtime_error is not None and isinstance(exc, runtime_error):
+            return None
+        raise
+
+
+def _build_sdk_submit_backend(api: _SdkApi, config: AnnouncementConfig) -> Any:
+    backend_config = _load_sdk_submit_backend_config(api, config)
+    _reject_mock_sdk_backend(backend_config, "configured SDK submit backend")
+
+    backend = api.build_submit_backend(backend_config)
+    _reject_mock_sdk_backend(backend, "constructed SDK submit backend")
+    return backend
+
+
+def _load_sdk_submit_backend_config(
+    api: _SdkApi,
+    config: AnnouncementConfig,
+) -> Any:
+    endpoint = config.sdk_endpoint
+    if endpoint is None or not endpoint.strip():
+        raise SubsystemSdkUnavailableError(
+            "subsystem-sdk runtime is not configured and sdk_endpoint is unset; "
+            "wrap runtime calls in subsystem_sdk.base.configure_runtime(...) or "
+            "set AnnouncementConfig.sdk_endpoint to a non-mock SDK backend "
+            "configuration path or PostgreSQL DSN."
+        )
+
+    endpoint_text = endpoint.strip()
+    if _looks_like_backend_config_path(endpoint_text):
+        if api.load_submit_backend_config is None:
+            raise UnsupportedSubsystemSdkError(
+                "subsystem-sdk load_submit_backend_config is required for "
+                "sdk_endpoint backend config paths"
+            )
+        return api.load_submit_backend_config(Path(endpoint_text))
+
+    config_model = api.submit_backend_config
+    if config_model is None:
+        raise UnsupportedSubsystemSdkError(
+            "subsystem-sdk SubmitBackendConfig is required for sdk_endpoint DSNs"
+        )
+    return config_model(backend_kind="lite_pg", dsn=endpoint_text)
+
+
+def _looks_like_backend_config_path(endpoint: str) -> bool:
+    if "://" in endpoint:
+        return False
+    return Path(endpoint).suffix.lower() in _BACKEND_CONFIG_SUFFIXES
+
+
+def _reject_mock_sdk_backend(value: Any, label: str) -> None:
+    if _backend_kind(value) != "mock":
+        return
+    raise UnsupportedSubsystemSdkError(
+        f"{label} must not use backend_kind='mock' in production runtime"
+    )
+
+
+def _backend_kind(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return value.get("backend_kind")
+    return getattr(value, "backend_kind", None)
 
 
 def _stub_explicitly_allowed(allow_sdk_stub: bool) -> bool:
