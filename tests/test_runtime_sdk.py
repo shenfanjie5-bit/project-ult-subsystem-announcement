@@ -187,6 +187,8 @@ def test_concurrent_heartbeats_keep_same_run_id() -> None:
 
 
 def test_sdk_missing_fails_without_explicit_test_stub() -> None:
+    if SDK_AVAILABLE:
+        pytest.skip("subsystem-sdk is installed in this environment")
     assert SDK_AVAILABLE is False
     with pytest.raises(SubsystemSdkUnavailableError, match="subsystem-sdk is required"):
         AnnouncementSubsystem(AnnouncementConfig())
@@ -195,6 +197,8 @@ def test_sdk_missing_fails_without_explicit_test_stub() -> None:
 def test_sdk_missing_fails_even_with_legacy_test_stub_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if SDK_AVAILABLE:
+        pytest.skip("subsystem-sdk is installed in this environment")
     assert SDK_AVAILABLE is False
     monkeypatch.setenv("SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB", "1")
 
@@ -310,7 +314,7 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
             "domain": "announcement",
             "supported_ex_types": ("Ex-0", "Ex-1", "Ex-2", "Ex-3"),
             "owner": "subsystem-announcement",
-            "heartbeat_policy_ref": "interval:60s",
+            "heartbeat_policy_ref": "default",
             "capabilities": {
                 "parser_version": "not-configured",
                 "registration_ttl_seconds": 900,
@@ -321,10 +325,7 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
     assert (
         "heartbeat",
         {
-            "subsystem_id": "subsystem-announcement",
-            "version": "0.1.0",
-            "heartbeat_at": heartbeat.timestamp,
-            "status": "ok",
+            "status": "healthy",
             "last_output_at": None,
             "pending_count": 0,
         },
@@ -333,9 +334,10 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
     assert len(submit_calls) == 1
     submit_payload = submit_calls[0][1]
     assert submit_payload["ex_type"] == "Ex-0"
+    assert submit_payload["semantic"] == "metadata_or_heartbeat"
     assert submit_payload["subsystem_id"] == "subsystem-announcement"
     assert submit_payload["version"] == "0.1.0"
-    assert submit_payload["status"] == "ok"
+    assert submit_payload["status"] == "healthy"
     assert submit_payload["pending_count"] == 0
     assert "run_id" not in submit_payload
     assert "reason" not in submit_payload
@@ -362,7 +364,7 @@ def test_load_config_rejects_non_positive_runtime_intervals(
         load_config(config_path)
 
 
-def test_cli_ping_fails_when_sdk_is_unavailable() -> None:
+def test_cli_ping_uses_sdk_when_available_and_fails_without_it() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "subsystem_announcement", "ping"],
         cwd=ROOT,
@@ -372,12 +374,17 @@ def test_cli_ping_fails_when_sdk_is_unavailable() -> None:
         text=True,
     )
 
-    assert result.returncode == 1
-    assert result.stdout.strip() == ""
-    assert "subsystem-sdk is required" in result.stderr
+    if SDK_AVAILABLE:
+        assert result.returncode == 0
+        assert result.stdout.strip() == "ok"
+        assert result.stderr == ""
+    else:
+        assert result.returncode == 1
+        assert result.stdout.strip() == ""
+        assert "subsystem-sdk is required" in result.stderr
 
 
-def test_cli_ping_fails_when_legacy_test_stub_env_is_set() -> None:
+def test_cli_ping_ignores_legacy_stub_env_and_uses_or_requires_sdk() -> None:
     env = _cli_env()
     env["SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB"] = "1"
 
@@ -390,12 +397,17 @@ def test_cli_ping_fails_when_legacy_test_stub_env_is_set() -> None:
         text=True,
     )
 
-    assert result.returncode == 1
-    assert result.stdout.strip() == ""
-    assert "subsystem-sdk is required" in result.stderr
+    if SDK_AVAILABLE:
+        assert result.returncode == 0
+        assert result.stdout.strip() == "ok"
+        assert result.stderr == ""
+    else:
+        assert result.returncode == 1
+        assert result.stdout.strip() == ""
+        assert "subsystem-sdk is required" in result.stderr
 
 
-def test_cli_run_once_fails_when_sdk_is_unavailable() -> None:
+def test_cli_run_once_uses_sdk_when_available_and_fails_without_it() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "subsystem_announcement", "run", "--once"],
         cwd=ROOT,
@@ -405,6 +417,11 @@ def test_cli_run_once_fails_when_sdk_is_unavailable() -> None:
         text=True,
     )
 
-    assert result.returncode == 1
-    assert result.stdout.strip() == ""
-    assert "subsystem-sdk is required" in result.stderr
+    if SDK_AVAILABLE:
+        assert result.returncode == 0
+        assert result.stdout.strip() == "ok"
+        assert result.stderr == ""
+    else:
+        assert result.returncode == 1
+        assert result.stdout.strip() == ""
+        assert "subsystem-sdk is required" in result.stderr

@@ -83,7 +83,7 @@ def test_docling_dependency_is_exactly_pinned() -> None:
     }
 
     assert dependencies_by_name["docling"] == "docling==2.15.1"
-    assert dependencies_by_name["docling-core"] == "docling-core>=2.13.1,<3.0.0"
+    assert dependencies_by_name["docling-core"] == "docling-core==2.13.1"
     assert dependencies_by_name["llama-index-core"] == "llama-index-core==0.10.0"
     assert "llama-index" not in dependencies_by_name
     assert "llama-index-node-parser-docling" not in dependencies_by_name
