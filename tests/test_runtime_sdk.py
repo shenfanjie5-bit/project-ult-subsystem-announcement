@@ -186,16 +186,22 @@ def test_concurrent_heartbeats_keep_same_run_id() -> None:
     assert {heartbeat.run_id for heartbeat in heartbeats} == {subsystem.run_id}
 
 
+@pytest.mark.skipif(
+    SDK_AVAILABLE,
+    reason="exercises the missing-subsystem-sdk path; only runs without the real SDK",
+)
 def test_sdk_missing_fails_without_explicit_test_stub() -> None:
-    assert SDK_AVAILABLE is False
     with pytest.raises(SubsystemSdkUnavailableError, match="subsystem-sdk is required"):
         AnnouncementSubsystem(AnnouncementConfig())
 
 
+@pytest.mark.skipif(
+    SDK_AVAILABLE,
+    reason="exercises the missing-subsystem-sdk path; only runs without the real SDK",
+)
 def test_sdk_missing_fails_even_with_legacy_test_stub_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert SDK_AVAILABLE is False
     monkeypatch.setenv("SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB", "1")
 
     with pytest.raises(SubsystemSdkUnavailableError, match="subsystem-sdk is required"):
@@ -362,6 +368,10 @@ def test_load_config_rejects_non_positive_runtime_intervals(
         load_config(config_path)
 
 
+@pytest.mark.skipif(
+    SDK_AVAILABLE,
+    reason="exercises the missing-subsystem-sdk CLI path; only runs without the real SDK",
+)
 def test_cli_ping_fails_when_sdk_is_unavailable() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "subsystem_announcement", "ping"],
@@ -377,6 +387,10 @@ def test_cli_ping_fails_when_sdk_is_unavailable() -> None:
     assert "subsystem-sdk is required" in result.stderr
 
 
+@pytest.mark.skipif(
+    SDK_AVAILABLE,
+    reason="exercises the missing-subsystem-sdk CLI path; only runs without the real SDK",
+)
 def test_cli_ping_fails_when_legacy_test_stub_env_is_set() -> None:
     env = _cli_env()
     env["SUBSYSTEM_ANNOUNCEMENT_TEST_SDK_STUB"] = "1"
@@ -395,6 +409,10 @@ def test_cli_ping_fails_when_legacy_test_stub_env_is_set() -> None:
     assert "subsystem-sdk is required" in result.stderr
 
 
+@pytest.mark.skipif(
+    SDK_AVAILABLE,
+    reason="exercises the missing-subsystem-sdk CLI path; only runs without the real SDK",
+)
 def test_cli_run_once_fails_when_sdk_is_unavailable() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "subsystem_announcement", "run", "--once"],
