@@ -116,6 +116,13 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
                 "Install the pinned dependency or inject the local SDK stub "
                 "from test-only code."
             )
+        # When allow_sdk_stub is set, the caller explicitly asked for the
+        # offline stub path (used by tests and by lifecycle scenarios that
+        # cannot afford to hit the real registration registry). In that mode
+        # we never delegate to the official SDK, even if it is importable.
+        self._uses_real_sdk = SDK_AVAILABLE and not _stub_explicitly_allowed(
+            allow_sdk_stub
+        )
         self.config = config
         self.run_id = str(uuid4())
         self.last_ex_id: str | None = None
@@ -128,7 +135,7 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
         from .registration import build_registration_spec
 
         spec = build_registration_spec(self.config)
-        if SDK_AVAILABLE:
+        if self._uses_real_sdk:
             _require_sdk_api().register_subsystem(
                 _to_sdk_registration_spec(spec, self.config),
             )
@@ -146,7 +153,7 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
             last_ex_id=self.last_ex_id,
             status="degraded" if self.last_submit_failed else "ok",
         )
-        if SDK_AVAILABLE:
+        if self._uses_real_sdk:
             sdk_payload = _to_sdk_heartbeat_payload(payload)
             _validate_sdk_payload("Ex-0", sdk_payload)
             _ensure_accepted(
@@ -159,7 +166,7 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
         """Submit a candidate through the SDK surface."""
 
         ex_type = _payload_ex_type(candidate)
-        if SDK_AVAILABLE:
+        if self._uses_real_sdk:
             sdk_payload = _to_sdk_submit_payload(candidate)
             _validate_sdk_payload(ex_type, sdk_payload)
             result = _coerce_submit_result(
@@ -173,7 +180,11 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
         self._submit_seq += 1
         receipt_id = f"{self.run_id}:{self._submit_seq}"
         self.last_ex_id = receipt_id
-        return SubmitResult(
+        # Stub path always returns the offline StubSubmitResult, regardless of
+        # whether the official subsystem-sdk happens to be importable. The
+        # offline result preserves the producer-side ex_type for callers that
+        # introspect the receipt without a transport layer.
+        return StubSubmitResult(
             accepted=True,
             receipt_id=receipt_id,
             ex_type=ex_type,

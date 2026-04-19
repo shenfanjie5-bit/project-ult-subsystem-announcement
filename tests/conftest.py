@@ -48,9 +48,15 @@ def fake_sdk(monkeypatch: pytest.MonkeyPatch) -> FakeSDKRecorder:
             if recorder.raise_on_submit:
                 raise RuntimeError("fake submit failure")
             if recorder.reject_submit:
-                from subsystem_announcement.runtime.sdk_adapter import SubmitResult
+                # Use the offline stub result here even when the real
+                # subsystem-sdk is installed: the recording subsystem runs in
+                # stub mode (allow_sdk_stub=True) and never reaches the SDK
+                # transport, so its receipt model is the stub variant.
+                from subsystem_announcement.runtime._sdk_stub import (
+                    SubmitResult as StubSubmitResult,
+                )
 
-                result = SubmitResult(
+                result = StubSubmitResult(
                     accepted=False,
                     receipt_id="fake-rejected",
                     ex_type=payload["ex_type"],
