@@ -11,21 +11,31 @@ to run this lane:
     pip install -e ".[dev,contracts-schemas]"
     pytest tests/contract/test_contracts_alignment.py
 
-What this tier verifies (codex stage 2.7 follow-up + 2.8 invariant
-checklist categories C+E):
+Two layers of cross-repo verification (codex stage 2.7+2.8 review trail):
 
-1. Every announcement candidate model REAL instantiates with realistic
-   field values + ``to_ex_payload()`` returns a dict that contracts
-   ``Ex*Payload.model_validate`` accepts after SDK envelope strip
-   (``ex_type`` removed). Not just "fields exist" — actually round-trip.
-2. Wire-shape parity with subsystem-sdk's strip: the payload announcement
-   hands the SDK has ``ex_type`` envelope; what the SDK sends to backend
-   (and what contracts validates) is the post-strip shape.
-3. CLAUDE.md ingest-metadata guard: ``FORBIDDEN_PAYLOAD_KEYS`` ⊇
-   ``contracts.schemas.FORBIDDEN_INGEST_METADATA_FIELDS``.
+**Layer 1 (PRODUCTION FIX VERIFIED — codex stage 2.8 follow-up #2):**
+the production wire normalizer in ``runtime/submit.py:_normalize_for_sdk``
+adds the SDK-required ``subsystem_id`` + ``produced_at`` fields. Tests
+in this file invoke the REAL production normalizer
+(``runtime.submit._validated_payload``) — NOT a test-side workaround.
+These assertions are unconditional: any drift between announcement's
+production output and the SDK-required field set is a P1.
+
+**Layer 2 (KNOWN SCHEMA GAP — DOCUMENTED, NOT YET FIXED):** announcement
+candidate models declare fields that ``contracts.schemas.Ex*CandidateFact /
+Signal / GraphDelta`` doesn't accept (announcement_id, evidence_spans,
+related_entity_ids, primary_entity_id-vs-entity_id rename, etc.). This
+is a deeper cross-repo schema decision (either announcement renames /
+drops local fields, or contracts.Ex* extends to accept them). Tests
+in the ``TestKnownAnnouncementContractsSchemaGap`` class are marked
+``xfail strict=True`` — when a future cross-repo migration closes the
+gap, those tests start passing and yell at us to remove the xfail (and
+the announcement-side workarounds that document the gap today).
 """
 
 from __future__ import annotations
+
+from datetime import UTC, datetime
 
 import pytest
 
@@ -38,96 +48,73 @@ contracts_schemas = pytest.importorskip(
 )
 
 
-class TestEx1FactCandidateRoundTripAgainstContracts:
-    """Stage 2.7 sub-rule: real instantiate + dump → contracts.model_validate."""
+# ── Layer 1: PRODUCTION NORMALIZER VERIFIED (unconditional) ─────────
 
-    def test_ex1_candidate_dumps_to_contracts_compliant_wire(self) -> None:
-        from datetime import UTC, datetime
 
-        from contracts.schemas import Ex1CandidateFact
-        from subsystem_sdk.validate.engine import strip_sdk_envelope
+class TestProductionNormalizerAddsSdkRequiredFields:
+    """Stage 2.8 follow-up #2 (codex review #6 P1) production fix:
+    ``runtime/submit.py:_normalize_for_sdk`` adds ``subsystem_id``
+    (from MODULE_ID) + ``produced_at`` (from extracted_at / generated_at)
+    to the wire payload. These are what subsystem-sdk's
+    ``assert_producer_only`` requires for Ex-1/2/3.
 
+    These assertions are unconditional — any drift in the production
+    normalizer is a P1 (real production submit path would break).
+    """
+
+    def test_ex1_production_payload_includes_subsystem_id_and_produced_at(
+        self,
+    ) -> None:
         from subsystem_announcement.extract import (
             AnnouncementFactCandidate,
         )
         from subsystem_announcement.extract.candidates import FactType
         from subsystem_announcement.extract.evidence import EvidenceSpan
+        from subsystem_announcement.runtime.submit import _validated_payload
 
         candidate = AnnouncementFactCandidate(
-            fact_id="cross-repo-fact-001",
-            announcement_id="cross-repo-ann-001",
+            fact_id="prod-norm-ex1",
+            announcement_id="prod-norm-ann",
             fact_type=FactType.MAJOR_CONTRACT,
             primary_entity_id="ENT_STOCK_300750_SZ",
             related_entity_ids=["ENT_STOCK_PARTNER"],
-            fact_content={"contract_value_yuan": 1_000_000_000},
+            fact_content={"k": "v"},
             confidence=0.92,
             source_reference={
-                "official_url": (
-                    "https://www.sse.com.cn/disclosure/announcement/"
-                    "cross-repo-test"
-                ),
-                "source_kind": "exchange_disclosure",
+                "official_url": "https://www.sse.com.cn/disclosure/announcement/prod-norm",
                 "is_primary_source": True,
             },
             evidence_spans=[
                 EvidenceSpan(
-                    section_id="section-001",
+                    section_id="s1",
                     start_offset=0,
                     end_offset=11,
                     quote="placeholder",
-                ),
+                )
             ],
             extracted_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
-        # The announcement -> SDK -> backend wire path strips ex_type.
-        # Mirror that strip here so we feed contracts what it actually
-        # receives (NOT the announcement-side dict that still has ex_type).
-        announcement_payload = candidate.to_ex_payload()
-        wire_payload = dict(strip_sdk_envelope(announcement_payload))
+        # REAL production normalizer.
+        wire = _validated_payload(candidate)
 
-        # The announcement candidate's wire shape includes annotation-
-        # specific fields (announcement_id, fact_id, fact_type, evidence_spans
-        # etc.) that the contracts Ex1CandidateFact base model doesn't
-        # declare. contracts has extra="forbid". Two wire-shape views
-        # exist here:
-        #
-        # (A) The full announcement wire payload (sent to Layer B for
-        #     announcement-specific processing).
-        # (B) The contracts-base subset that satisfies Ex1CandidateFact's
-        #     required fields (subsystem_id is a stand-in for what Layer B
-        #     pairs with the announcement_id; fact_id / entity_id /
-        #     fact_type / fact_content / confidence / source_reference /
-        #     extracted_at all map directly).
-        #
-        # The boundary tier asserts (A) reaches the backend; here the
-        # contract align test asserts (B) is constructable from (A) —
-        # i.e., everything contracts requires can be derived from
-        # announcement's wire payload, with `subsystem_id` filled in by
-        # the SDK adapter at submission time.
-        contracts_subset = {
-            "subsystem_id": "subsystem-announcement",
-            "fact_id": wire_payload["fact_id"],
-            "entity_id": wire_payload["primary_entity_id"],
-            "fact_type": wire_payload["fact_type"],
-            "fact_content": wire_payload["fact_content"],
-            "confidence": wire_payload["confidence"],
-            "source_reference": wire_payload["source_reference"],
-            "extracted_at": wire_payload["extracted_at"],
-        }
-        validated = Ex1CandidateFact.model_validate(contracts_subset)
-        assert validated.fact_id == "cross-repo-fact-001"
-        assert validated.entity_id == "ENT_STOCK_300750_SZ"
+        assert wire["subsystem_id"] == "subsystem-announcement", (
+            "production _normalize_for_sdk lost subsystem_id; "
+            "AnnouncementSubsystem.submit -> assert_producer_only would "
+            "raise MissingProducerFieldError"
+        )
+        assert "produced_at" in wire, (
+            "production _normalize_for_sdk lost produced_at; SDK assert_producer_only "
+            "would raise MissingProducerFieldError"
+        )
+        # Ex-1: produced_at maps from extracted_at.
+        assert wire["produced_at"] == wire["extracted_at"]
 
-
-class TestEx2SignalCandidateRoundTripAgainstContracts:
-    def test_ex2_candidate_dumps_to_contracts_compliant_wire(self) -> None:
-        from datetime import UTC, datetime
-
-        from contracts.schemas import Ex2CandidateSignal
-        from subsystem_sdk.validate.engine import strip_sdk_envelope
-
+    def test_ex2_production_payload_includes_subsystem_id_and_produced_at(
+        self,
+    ) -> None:
         from subsystem_announcement.extract.evidence import EvidenceSpan
+        from subsystem_announcement.runtime.submit import _validated_payload
         from subsystem_announcement.signals import (
             AnnouncementSignalCandidate,
         )
@@ -137,121 +124,87 @@ class TestEx2SignalCandidateRoundTripAgainstContracts:
         )
 
         candidate = AnnouncementSignalCandidate(
-            signal_id="cross-repo-signal-001",
-            announcement_id="cross-repo-ann-001",
+            signal_id="prod-norm-ex2",
+            announcement_id="prod-norm-ann",
             signal_type="major_contract_positive",
             direction=SignalDirection.POSITIVE,
             magnitude=0.7,
             affected_entities=["ENT_STOCK_300750_SZ"],
             time_horizon=SignalTimeHorizon.SHORT_TERM,
-            source_fact_ids=["cross-repo-fact-001"],
+            source_fact_ids=["prod-norm-source-fact"],
             source_reference={
-                "official_url": (
-                    "https://www.sse.com.cn/disclosure/announcement/"
-                    "cross-repo-test"
-                ),
+                "official_url": "https://www.sse.com.cn/disclosure/announcement/prod-norm",
                 "is_primary_source": True,
             },
             evidence_spans=[
                 EvidenceSpan(
-                    section_id="section-001",
+                    section_id="s1",
                     start_offset=0,
                     end_offset=11,
                     quote="placeholder",
-                ),
+                )
             ],
             confidence=0.88,
             generated_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
-        announcement_payload = candidate.to_ex_payload()
-        wire_payload = dict(strip_sdk_envelope(announcement_payload))
+        wire = _validated_payload(candidate)
 
-        contracts_subset = {
-            "subsystem_id": "subsystem-announcement",
-            "signal_id": wire_payload["signal_id"],
-            "signal_type": wire_payload["signal_type"],
-            # contracts Direction enum: bullish / bearish / neutral.
-            # announcement SignalDirection: positive / negative / neutral.
-            # Map at the wire boundary (per stage 2.7 status enum lesson).
-            "direction": {
-                "positive": "bullish",
-                "negative": "bearish",
-                "neutral": "neutral",
-            }[wire_payload["direction"]],
-            "magnitude": wire_payload["magnitude"],
-            "affected_entities": wire_payload["affected_entities"],
-            "affected_sectors": ["SECTOR_PLACEHOLDER"],
-            "time_horizon": wire_payload["time_horizon"],
-            # contracts Ex2CandidateSignal requires `evidence` as
-            # list[NonEmptyString] — flatten evidence_spans to their
-            # quotes for the contract-base view.
-            "evidence": [
-                span["quote"] for span in wire_payload["evidence_spans"]
-            ],
-            "confidence": wire_payload["confidence"],
-        }
-        validated = Ex2CandidateSignal.model_validate(contracts_subset)
-        assert validated.signal_id == "cross-repo-signal-001"
-        assert validated.direction.value == "bullish"
+        assert wire["subsystem_id"] == "subsystem-announcement"
+        assert "produced_at" in wire
+        # Ex-2: produced_at maps from generated_at.
+        assert wire["produced_at"] == wire["generated_at"]
 
-
-class TestEx3GraphDeltaCandidateRoundTripAgainstContracts:
-    def test_ex3_candidate_dumps_to_contracts_compliant_wire(self) -> None:
-        from datetime import UTC, datetime
-
-        from contracts.schemas import Ex3CandidateGraphDelta
-        from subsystem_sdk.validate.engine import strip_sdk_envelope
-
+    def test_ex3_production_payload_includes_subsystem_id_and_produced_at(
+        self,
+    ) -> None:
+        from subsystem_announcement.extract.evidence import EvidenceSpan
         from subsystem_announcement.graph import (
             AnnouncementGraphDeltaCandidate,
         )
-
-        # Construct a minimal Ex-3 graph delta candidate. Use realistic
-        # field values that the announcement model will accept; the
-        # exact constructor signature comes from
-        # subsystem_announcement/graph/candidates.py.
         from subsystem_announcement.graph.candidates import (
-            AnnouncementGraphDeltaCandidate as _Ex3,
+            GraphDeltaType,
+            GraphRelationType,
         )
-        # Inspect the model's required fields so we don't hard-code a
-        # potentially stale constructor — keep this test resilient to
-        # announcement-side schema additions.
-        required_fields = sorted(
-            name
-            for name, field in _Ex3.model_fields.items()
-            if field.is_required()
-        )
-        # Sanity check — cross-repo align must cover the announcement
-        # Ex-3 model when it exists; if required_fields is empty, the
-        # model has been refactored beyond what this test understands
-        # and the contract test should be updated, not silently passed.
-        assert required_fields, (
-            "AnnouncementGraphDeltaCandidate has no required fields — "
-            "model may have been refactored; update this contract align "
-            "test to match"
+        from subsystem_announcement.runtime.submit import _validated_payload
+
+        candidate = AnnouncementGraphDeltaCandidate(
+            delta_id="prod-norm-ex3",
+            announcement_id="prod-norm-ann",
+            delta_type=GraphDeltaType.ADD_EDGE,
+            source_node="ENT_STOCK_INTEG_SRC",
+            target_node="ENT_STOCK_INTEG_DST",
+            relation_type=GraphRelationType.SUPPLY_CONTRACT,
+            properties={"strength": "strong"},
+            source_fact_ids=["prod-norm-source-fact"],
+            source_reference={
+                "official_url": "https://www.sse.com.cn/disclosure/announcement/prod-norm",
+                "is_primary_source": True,
+            },
+            evidence_spans=[
+                EvidenceSpan(
+                    section_id="s1",
+                    start_offset=0,
+                    end_offset=11,
+                    quote="placeholder",
+                ),
+                EvidenceSpan(
+                    section_id="s2",
+                    start_offset=0,
+                    end_offset=15,
+                    quote="dual_evidence!!",
+                ),
+            ],
+            confidence=0.92,
+            generated_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
-        # Verify the model declares ex_type defaulted to "Ex-3" (the
-        # SDK routing marker that gets stripped at dispatch).
-        ex_type_field = _Ex3.model_fields["ex_type"]
-        assert ex_type_field.default == "Ex-3"
+        wire = _validated_payload(candidate)
 
-        # Verify Ex3CandidateGraphDelta from contracts has the canonical
-        # fields announcement maps to.
-        for canonical_field in (
-            "delta_id",
-            "delta_type",
-            "source_node",
-            "target_node",
-            "relation_type",
-            "properties",
-            "evidence",
-        ):
-            assert canonical_field in Ex3CandidateGraphDelta.model_fields, (
-                f"contracts Ex3CandidateGraphDelta missing canonical "
-                f"field {canonical_field!r}"
-            )
+        assert wire["subsystem_id"] == "subsystem-announcement"
+        assert "produced_at" in wire
+        # Ex-3: produced_at maps from generated_at.
+        assert wire["produced_at"] == wire["generated_at"]
 
 
 class TestForbiddenPayloadKeysAlignedWithContracts:
@@ -276,3 +229,204 @@ class TestForbiddenPayloadKeysAlignedWithContracts:
             "let these through to the contracts model where they'd be "
             "rejected — drift creates a confusing two-layer error"
         )
+
+
+# ── Layer 2: KNOWN SCHEMA GAP (xfail strict, document the gap) ─────
+
+
+class TestKnownAnnouncementContractsSchemaGap:
+    """Document the cross-repo schema mismatch between announcement
+    candidate models and contracts.schemas.Ex*. These tests are
+    ``xfail strict=True`` — when a future cross-repo migration closes
+    the gap, they start passing and signal it's time to remove the
+    xfail and the workarounds in announcement.
+
+    The gap (codex stage 2.8 review #6 P1 documented this honestly):
+
+    Announcement candidate models declare fields contracts.Ex* doesn't:
+    - announcement.AnnouncementFactCandidate has ``primary_entity_id`` —
+      contracts.Ex1CandidateFact has ``entity_id`` (rename gap)
+    - announcement has ``announcement_id`` — contracts has no
+      announcement_id field (drop or extend gap)
+    - announcement has ``evidence_spans: list[EvidenceSpan]`` —
+      contracts.Ex1CandidateFact has no evidence field at all
+    - announcement has ``related_entity_ids`` — contracts has no
+      analog
+    - announcement.AnnouncementSignalCandidate's SignalDirection is
+      ``{positive,negative,neutral}`` — contracts.Direction is
+      ``{bullish,bearish,neutral}`` (enum mapping gap)
+    - contracts.Ex2CandidateSignal requires ``affected_sectors`` and
+      ``evidence: list[EvidenceRef]`` — announcement has neither
+
+    The fix path is one of:
+    (a) Refactor announcement candidate models to mirror contracts.Ex*
+        exactly (rename + drop fields).
+    (b) Extend contracts.Ex* with optional fields covering announcement's
+        local concepts.
+    (c) Define a translation layer that maps announcement → contracts at
+        the wire boundary (in addition to ``_normalize_for_sdk``'s
+        subsystem_id/produced_at addition).
+
+    None of those are in stage 2.8 scope. They need a separate
+    cross-repo schema decision milestone.
+    """
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Announcement Ex-1 candidate has primary_entity_id (not "
+            "entity_id), announcement_id, evidence_spans, "
+            "related_entity_ids — none accepted by contracts.Ex1CandidateFact "
+            "(extra='forbid'). Cross-repo schema reconciliation needed; see "
+            "TestKnownAnnouncementContractsSchemaGap docstring."
+        ),
+    )
+    def test_announcement_ex1_wire_validates_against_contracts_unchanged(
+        self,
+    ) -> None:
+        from contracts.schemas import Ex1CandidateFact
+
+        from subsystem_announcement.extract import (
+            AnnouncementFactCandidate,
+        )
+        from subsystem_announcement.extract.candidates import FactType
+        from subsystem_announcement.extract.evidence import EvidenceSpan
+        from subsystem_announcement.runtime.submit import _validated_payload
+
+        candidate = AnnouncementFactCandidate(
+            fact_id="gap-ex1",
+            announcement_id="gap-ann",
+            fact_type=FactType.MAJOR_CONTRACT,
+            primary_entity_id="ENT_STOCK_300750_SZ",
+            fact_content={"k": "v"},
+            confidence=0.92,
+            source_reference={
+                "official_url": "https://www.sse.com.cn/disclosure/announcement/gap",
+            },
+            evidence_spans=[
+                EvidenceSpan(
+                    section_id="s1",
+                    start_offset=0,
+                    end_offset=11,
+                    quote="placeholder",
+                )
+            ],
+            extracted_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        wire = _validated_payload(candidate)
+        # This will fail today: contracts.Ex1CandidateFact has
+        # extra='forbid' and the wire payload includes announcement-
+        # specific fields (announcement_id, evidence_spans, etc.).
+        Ex1CandidateFact.model_validate(wire)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Announcement Ex-2 SignalDirection enum is "
+            "{positive,negative,neutral}; contracts.Direction is "
+            "{bullish,bearish,neutral}. Plus contracts.Ex2CandidateSignal "
+            "requires affected_sectors + evidence (announcement has neither). "
+            "Cross-repo schema reconciliation needed."
+        ),
+    )
+    def test_announcement_ex2_wire_validates_against_contracts_unchanged(
+        self,
+    ) -> None:
+        from contracts.schemas import Ex2CandidateSignal
+
+        from subsystem_announcement.extract.evidence import EvidenceSpan
+        from subsystem_announcement.runtime.submit import _validated_payload
+        from subsystem_announcement.signals import (
+            AnnouncementSignalCandidate,
+        )
+        from subsystem_announcement.signals.candidates import (
+            SignalDirection,
+            SignalTimeHorizon,
+        )
+
+        candidate = AnnouncementSignalCandidate(
+            signal_id="gap-ex2",
+            announcement_id="gap-ann",
+            signal_type="major_contract_positive",
+            direction=SignalDirection.POSITIVE,
+            magnitude=0.7,
+            affected_entities=["ENT_STOCK_300750_SZ"],
+            time_horizon=SignalTimeHorizon.SHORT_TERM,
+            source_fact_ids=["gap-source-fact"],
+            source_reference={
+                "official_url": "https://www.sse.com.cn/disclosure/announcement/gap",
+            },
+            evidence_spans=[
+                EvidenceSpan(
+                    section_id="s1",
+                    start_offset=0,
+                    end_offset=11,
+                    quote="placeholder",
+                )
+            ],
+            confidence=0.88,
+            generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        wire = _validated_payload(candidate)
+        # Will fail: enum mismatch + missing affected_sectors/evidence.
+        Ex2CandidateSignal.model_validate(wire)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Announcement Ex-3 has source_node/target_node + delta_type "
+            "GraphDeltaType {add_edge,update_edge}; contracts.Ex3CandidateGraphDelta "
+            "expects same. But announcement also has source_fact_ids + "
+            "evidence_spans which contracts doesn't accept (extra='forbid'); "
+            "and contracts requires `evidence: list[EvidenceRef]` which "
+            "announcement doesn't emit. Cross-repo schema reconciliation needed."
+        ),
+    )
+    def test_announcement_ex3_wire_validates_against_contracts_unchanged(
+        self,
+    ) -> None:
+        from contracts.schemas import Ex3CandidateGraphDelta
+
+        from subsystem_announcement.extract.evidence import EvidenceSpan
+        from subsystem_announcement.graph import (
+            AnnouncementGraphDeltaCandidate,
+        )
+        from subsystem_announcement.graph.candidates import (
+            GraphDeltaType,
+            GraphRelationType,
+        )
+        from subsystem_announcement.runtime.submit import _validated_payload
+
+        candidate = AnnouncementGraphDeltaCandidate(
+            delta_id="gap-ex3",
+            announcement_id="gap-ann",
+            delta_type=GraphDeltaType.ADD_EDGE,
+            source_node="ENT_STOCK_INTEG_SRC",
+            target_node="ENT_STOCK_INTEG_DST",
+            relation_type=GraphRelationType.SUPPLY_CONTRACT,
+            properties={"k": "v"},
+            source_fact_ids=["gap-source-fact"],
+            source_reference={
+                "official_url": "https://www.sse.com.cn/disclosure/announcement/gap",
+            },
+            evidence_spans=[
+                EvidenceSpan(
+                    section_id="s1",
+                    start_offset=0,
+                    end_offset=11,
+                    quote="placeholder",
+                ),
+                EvidenceSpan(
+                    section_id="s2",
+                    start_offset=0,
+                    end_offset=15,
+                    quote="dual_evidence!!",
+                ),
+            ],
+            confidence=0.92,
+            generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        wire = _validated_payload(candidate)
+        # Will fail: announcement has source_fact_ids + evidence_spans,
+        # contracts has neither and requires `evidence`.
+        Ex3CandidateGraphDelta.model_validate(wire)

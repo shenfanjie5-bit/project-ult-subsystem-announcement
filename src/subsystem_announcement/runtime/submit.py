@@ -38,7 +38,15 @@ _FORBIDDEN_RUNTIME_KEYS = FORBIDDEN_PAYLOAD_KEYS | {
     "document_artifact_path",
     "parsed_artifact_path",
 }
-_VOLATILE_IDEMPOTENCY_PAYLOAD_KEYS = {"extracted_at", "generated_at"}
+# Stage 2.8 follow-up #2: ``produced_at`` is added by
+# ``_normalize_for_sdk`` as a copy of extracted_at/generated_at — it
+# inherits the same volatility (changes per construction) so it must
+# be excluded from idempotency hashes alongside its source fields.
+_VOLATILE_IDEMPOTENCY_PAYLOAD_KEYS = {
+    "extracted_at",
+    "generated_at",
+    "produced_at",
+}
 
 CandidatePayload: TypeAlias = (
     AnnouncementFactCandidate
@@ -527,7 +535,62 @@ def _validated_payload(candidate: CandidatePayload) -> dict[str, Any]:
         validated = AnnouncementSignalCandidate.model_validate(payload)
     else:
         validated = AnnouncementGraphDeltaCandidate.model_validate(payload)
-    return validated.model_dump(mode="json")
+    wire_payload = validated.model_dump(mode="json")
+    return _normalize_for_sdk(wire_payload, ex_type)
+
+
+def _normalize_for_sdk(
+    wire_payload: dict[str, Any], ex_type: str
+) -> dict[str, Any]:
+    """Add the SDK-required producer fields (``subsystem_id`` +
+    ``produced_at``) to the announcement candidate's wire payload
+    before handing it to the SDK adapter.
+
+    Background (codex stage 2.8 review #6 P1): subsystem-sdk's
+    ``assert_producer_only`` requires ``{subsystem_id, produced_at}``
+    for Ex-1/2/3, but the announcement candidate models declare
+    ``announcement_id`` + ``extracted_at`` (Ex-1) / ``generated_at``
+    (Ex-2/3) instead. Without this normalizer, the production submit
+    path through ``AnnouncementSubsystem.submit`` was silently broken
+    in real SDK mode — ``assert_producer_only`` would raise
+    ``MissingProducerFieldError``. The earlier integration test patched
+    around this by enriching the payload in test scaffolding; that
+    workaround is removed in stage 2.8 follow-up #2 because the
+    production normalization now does it.
+
+    Mapping:
+    - ``subsystem_id`` ← ``MODULE_ID`` (constant
+      ``"subsystem-announcement"``, matches the registration spec
+      announcement publishes through ``AnnouncementSubsystem.on_register``).
+    - ``produced_at`` ← ``extracted_at`` (Ex-1) / ``generated_at``
+      (Ex-2/3). These are announcement's local concepts of "when did
+      the candidate come into existence" and map to the SDK's idea
+      of "producer-side production timestamp".
+
+    This is a one-way normalization: subsystem_id and produced_at are
+    added to the wire payload but the announcement-local fields
+    (announcement_id, extracted_at, generated_at, evidence_spans,
+    related_entity_ids, primary_entity_id, etc.) are also kept on the
+    wire because announcement's own analytics + Layer B's announcement-
+    aware consumers may want them. The full reconciliation between
+    announcement candidate fields and ``contracts.schemas.Ex1CandidateFact /
+    Ex2CandidateSignal / Ex3CandidateGraphDelta`` shape (entity_id vs
+    primary_entity_id rename, contracts not declaring evidence_spans,
+    etc.) is a deeper cross-repo schema decision out of stage 2.8 scope.
+    """
+
+    from .registration import MODULE_ID
+
+    normalized = dict(wire_payload)
+    normalized.setdefault("subsystem_id", MODULE_ID)
+    if "produced_at" not in normalized:
+        if ex_type == "Ex-1":
+            produced_at = normalized.get("extracted_at")
+        else:  # Ex-2 / Ex-3 use generated_at
+            produced_at = normalized.get("generated_at")
+        if produced_at is not None:
+            normalized["produced_at"] = produced_at
+    return normalized
 
 
 def candidate_id_for(candidate: CandidatePayload) -> str:

@@ -155,59 +155,39 @@ def _assert_backend_received_wire_shape(
     return wire
 
 
-def _enrich_with_sdk_required_fields(
-    candidate_payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Enrich announcement candidate payload with the SDK-required
-    fields ``assert_producer_only`` checks.
-
-    Cross-repo reality (codex stage 2.7 + 2.8 review trail):
-    - Subsystem-sdk's ``_PRODUCER_OWNED_REQUIRED`` for Ex-1/2/3 is
-      ``{subsystem_id, produced_at}``.
-    - Announcement candidate models carry ``announcement_id`` +
-      ``extracted_at`` / ``generated_at`` instead.
-    - That's a real announcement-side gap — production
-      ``submit_candidates`` would need to enrich payloads at the
-      adapter boundary. As of stage 2.8 it doesn't, but THIS test is
-      about the WIRE-SHAPE boundary (Iron Rule #7), not about the
-      announcement payload-schema gap. So we enrich here to demonstrate
-      the wire path; the announcement payload-schema gap is a separate
-      concern (and a candidate for a future milestone).
-    """
-
-    enriched = dict(candidate_payload)
-    enriched.setdefault("subsystem_id", "subsystem-announcement")
-    if "produced_at" not in enriched:
-        # Use whatever timestamp the announcement model carries for
-        # this candidate — extracted_at for Ex-1, generated_at for Ex-2/3.
-        produced_at = (
-            enriched.get("extracted_at")
-            or enriched.get("generated_at")
-            or datetime(2026, 1, 1, tzinfo=UTC).isoformat()
-        )
-        enriched["produced_at"] = produced_at
-    return enriched
-
-
-def _submit_through_real_announcement_adapter(
-    candidate_payload: dict[str, Any],
+def _submit_candidate_through_real_announcement_pipeline(
+    candidate: Any,
 ) -> tuple[Any, MockSubmitBackend]:
-    """Drive a candidate payload through the FULL real announcement
-    adapter path: AnnouncementSubsystem.submit -> _validate_sdk_payload
-    (assert_producer_only) -> subsystem_sdk.submit.submit ->
-    BaseSubsystemContext.submit -> SubmitClient.submit ->
-    validate_then_dispatch (with strip) -> MockSubmitBackend.submit.
+    """Drive a candidate through the FULL real announcement pipeline:
+    1. ``runtime.submit._validated_payload(candidate)`` — production
+       normalization (re-validates the model AND adds subsystem_id +
+       produced_at via ``_normalize_for_sdk``, the production fix
+       added in stage 2.8 follow-up #2).
+    2. ``AnnouncementSubsystem.submit(wire_payload)`` — production
+       SDK adapter.
+    3. ``subsystem_sdk.submit.submit(sdk_payload)`` (top-level) →
+       ``BaseSubsystemContext.submit`` → ``SubmitClient.submit`` →
+       ``validate_then_dispatch`` → ``strip_sdk_envelope`` →
+       ``MockSubmitBackend.submit(wire)``.
 
-    Returns (receipt, backend) so callers can inspect both the SDK
-    receipt (was it accepted?) and the recording backend (did the wire
-    shape have the envelope stripped?).
+    Codex stage 2.8 review #6 P1 fix: previous version of this helper
+    had a ``_enrich_with_sdk_required_fields`` workaround that synthesized
+    subsystem_id + produced_at IN THE TEST (because production
+    ``_validated_payload`` didn't add them). That hid a real production
+    bug. The fix landed in ``runtime/submit.py:_normalize_for_sdk``;
+    this helper now uses the production normalizer directly so the
+    test exercises exactly what production code does — no test-side
+    enrichment.
     """
+
+    from subsystem_announcement.runtime.submit import _validated_payload
 
     context, backend = _build_context_with_recording_backend()
-    enriched = _enrich_with_sdk_required_fields(candidate_payload)
+    # Production normalization — same call submit_candidates() makes.
+    wire_payload = _validated_payload(candidate)
     with configure_runtime(context):
         subsystem = AnnouncementSubsystem(AnnouncementConfig())
-        receipt = subsystem.submit(enriched)
+        receipt = subsystem.submit(wire_payload)
     return receipt, backend
 
 
@@ -251,8 +231,8 @@ class TestEx1FactCandidateThroughRealAnnouncementAdapter:
             extracted_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
-        receipt, backend = _submit_through_real_announcement_adapter(
-            candidate.to_ex_payload()
+        receipt, backend = _submit_candidate_through_real_announcement_pipeline(
+            candidate
         )
 
         assert receipt.accepted is True
@@ -315,8 +295,8 @@ class TestEx2SignalCandidateThroughRealAnnouncementAdapter:
             generated_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
-        receipt, backend = _submit_through_real_announcement_adapter(
-            candidate.to_ex_payload()
+        receipt, backend = _submit_candidate_through_real_announcement_pipeline(
+            candidate
         )
 
         assert receipt.accepted is True
@@ -392,8 +372,8 @@ class TestEx3GraphDeltaCandidateThroughRealAnnouncementAdapter:
             generated_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
 
-        receipt, backend = _submit_through_real_announcement_adapter(
-            candidate.to_ex_payload()
+        receipt, backend = _submit_candidate_through_real_announcement_pipeline(
+            candidate
         )
 
         assert receipt.accepted is True

@@ -60,7 +60,12 @@ def test_ex3_submit_path_validates_contract_payload_without_runtime_metadata() -
 
     assert result.submitted == 1
     assert result.failed == 0
-    assert subsystem.submissions == [delta.to_ex_payload()]
+    # Stage 2.8 follow-up #2 (codex review #6 P1 fix): production
+    # _validated_payload now adds SDK-required subsystem_id +
+    # produced_at via _normalize_for_sdk before handing to subsystem.
+    from subsystem_announcement.runtime.submit import _validated_payload
+
+    assert subsystem.submissions == [_validated_payload(delta)]
     _assert_no_forbidden_keys(subsystem.submissions[0])
 
 
