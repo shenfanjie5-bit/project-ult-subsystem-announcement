@@ -4,28 +4,50 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subsystem-announcement"
-version = "0.1.0"
-description = "Announcement subsystem scaffold."
+version = "0.1.1"
+description = "Announcement subsystem (Ex-1 / Ex-2 / Ex-3 candidate emission via subsystem-sdk) for project-ult."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    # Heavy parser/index runtime deps (per CLAUDE.md: Docling is the ONLY parser).
     "docling==2.15.1",
     "docling-core==2.13.1",
     "llama-index-core==0.10.0",
+    # Lightweight runtime deps.
     "pydantic>=2.6",
     "typer>=0.12",
     "click<8.3",
     "structlog>=24.1",
     "httpx>=0.27",
-    "project-ult-subsystem-sdk>=0.1.0",
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
+    # Cross-repo SDK dep — kept as version constraint (NOT git+URL) per
+    # codex review #5/#6 P2; CI lanes preinstall the pinned tag in their
+    # 3-step install (contracts -> subsystem-sdk -> repo) per Makefile +
+    # ci.yml documented order. This matches entity-registry's pattern of
+    # `project-ult-contracts>=0.1.1` in base + CI preinstall the git tag.
+    "project-ult-subsystem-sdk>=0.1.1",
+    # contracts is announcement's transitive dep via subsystem-sdk; its
+    # version-constraint floor is declared in subsystem-sdk@v0.1.1's
+    # own pyproject (`project-ult-contracts>=0.1.1`), so we don't repeat
+    # it here. CI preinstalls contracts@v0.1.2 BEFORE subsystem-sdk so
+    # pip can resolve subsystem-sdk's contracts dep.
 ]
 
 [project.optional-dependencies]
+# Stage-2 plan iron rule #3 split:
+# - dev: offline-first pure-pip (test-fast / smoke lanes use only this).
+#   Includes pytest + pytest-asyncio (moved from base deps where they
+#   leaked previously — codex review #4 P2 housekeeping fix).
+# - contracts-schemas: cross-repo source-of-truth pin (contract lane).
+# - shared-fixtures: real audit-eval fixtures (regression lane).
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+]
+contracts-schemas = [
+    "project-ult-contracts @ git+https://github.com/shenfanjie5-bit/project-ult-contracts.git@v0.1.2",
+]
+shared-fixtures = [
+    "project-ult-audit-eval @ git+https://github.com/shenfanjie5-bit/project-ult-audit-eval.git@v0.2.2",
 ]
 
 [tool.setuptools.packages.find]

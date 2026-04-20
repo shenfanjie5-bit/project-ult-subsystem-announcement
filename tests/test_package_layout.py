@@ -38,7 +38,10 @@ def _cli_env() -> dict[str, str]:
 
 
 def test_package_exports_version_and_name() -> None:
-    assert __version__ == "0.1.0"
+    # Bumped 0.1.0 -> 0.1.1 in stage 2.8 (milestone-test-baseline) when
+    # public.py + 5 canonical tier dirs + 5-lane CI (3-step Plan A
+    # install) + iron rules 1-7 enforced landed.
+    assert __version__ == "0.1.1"
     assert PACKAGE_NAME == "subsystem-announcement"
 
 
@@ -140,7 +143,7 @@ def test_cli_version_returns_package_version() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.strip() == "0.1.0"
+    assert result.stdout.strip() == "0.1.1"
 
 
 def test_cli_doctor_loads_default_config() -> None:

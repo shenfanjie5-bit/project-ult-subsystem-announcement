@@ -312,7 +312,7 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
         "register",
         {
             "subsystem_id": "subsystem-announcement",
-            "version": "0.1.0",
+            "version": "0.1.1",
             "domain": "announcement",
             "supported_ex_types": ("Ex-0", "Ex-1", "Ex-2", "Ex-3"),
             "owner": "subsystem-announcement",
@@ -328,7 +328,7 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
         "heartbeat",
         {
             "subsystem_id": "subsystem-announcement",
-            "version": "0.1.0",
+            "version": "0.1.1",
             "heartbeat_at": heartbeat.timestamp,
             "status": "ok",
             "last_output_at": None,
@@ -340,7 +340,7 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
     submit_payload = submit_calls[0][1]
     assert submit_payload["ex_type"] == "Ex-0"
     assert submit_payload["subsystem_id"] == "subsystem-announcement"
-    assert submit_payload["version"] == "0.1.0"
+    assert submit_payload["version"] == "0.1.1"
     assert submit_payload["status"] == "ok"
     assert submit_payload["pending_count"] == 0
     assert "run_id" not in submit_payload
