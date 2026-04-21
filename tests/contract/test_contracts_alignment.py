@@ -21,16 +21,30 @@ in this file invoke the REAL production normalizer
 These assertions are unconditional: any drift between announcement's
 production output and the SDK-required field set is a P1.
 
-**Layer 2 (KNOWN SCHEMA GAP — DOCUMENTED, NOT YET FIXED):** announcement
-candidate models declare fields that ``contracts.schemas.Ex*CandidateFact /
-Signal / GraphDelta`` doesn't accept (announcement_id, evidence_spans,
-related_entity_ids, primary_entity_id-vs-entity_id rename, etc.). This
-is a deeper cross-repo schema decision (either announcement renames /
-drops local fields, or contracts.Ex* extends to accept them). Tests
-in the ``TestKnownAnnouncementContractsSchemaGap`` class are marked
-``xfail strict=True`` — when a future cross-repo migration closes the
-gap, those tests start passing and yell at us to remove the xfail (and
-the announcement-side workarounds that document the gap today).
+**Layer 2 (REAL ROUND-TRIP through contracts v0.1.3 canonical schema —
+codex stage 2.8 follow-up #3 closed the gap):** the cross-repo schema
+gap that earlier xfail-strict tests documented (primary_entity_id↔
+entity_id rename, evidence_spans not in canonical wire, generated_at
+extra-rejected for Ex-2/3, SignalDirection vs Direction enum, Ex-1
+missing canonical evidence slot) is now reconciled by:
+
+  - ``contracts v0.1.3`` adds optional ``producer_context`` extension
+    slot (Ex1/2/3) + optional ``Ex1.evidence`` + relaxes
+    ``Ex2.affected_sectors`` list min_length=1 (field stays required;
+    list-level constraint removed; element ``SectorId min_length=1``
+    still applies).
+  - announcement's ``runtime/submit.py:_normalize_for_sdk`` rewritten
+    as a full canonical mapper that produces the contracts-valid wire
+    shape directly (rename, enum mapping, evidence-ref serialization,
+    generated_at→produced_at rename+drop for Ex-2/3, pack non-canonical
+    fields into ``producer_context``).
+
+Tests in the ``TestProductionWirePayloadPassesRealContractsValidation``
+class assert the production normalizer's output ROUND TRIPS through
+``contracts.Ex1/2/3.model_validate()`` end-to-end — no xfail, no
+permissive validator bypass. Any drift in either the announcement
+mapper or the contracts canonical wire shape now fails this lane
+loudly.
 """
 
 from __future__ import annotations
