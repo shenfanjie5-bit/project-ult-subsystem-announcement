@@ -64,7 +64,10 @@ def test_pipeline_extracts_facts_then_generates_signals_then_submits_in_order(
         "Ex-1",
         "Ex-2",
     ]
-    assert subsystem.submissions[1]["source_fact_ids"] == [
+    # Stage 2.8 follow-up #3: source_fact_ids moved from top-level into
+    # producer_context (canonical contracts.Ex2 has no source_fact_ids
+    # field; it lives in announcement-local provenance).
+    assert subsystem.submissions[1]["producer_context"]["source_fact_ids"] == [
         subsystem.submissions[0]["fact_id"]
     ]
     assert [receipt["ex_type"] for receipt in run.submit_receipts] == [

@@ -6,37 +6,44 @@ Goal: prove that announcement's REAL SDK adapter
 ``validate_then_dispatch`` (which strips SDK envelope at dispatch
 boundary per stage 2.7 follow-up #2) and does NOT bypass it.
 
-Codex stage 2.8 review #5 P2: the previous version of this file
-constructed ``SubmitClient`` directly and submitted the candidate
-payload itself — that only re-tested subsystem-sdk's stripping
-behavior. It never exercised ``AnnouncementSubsystem.submit()`` or
-``runtime.submit.submit_candidates()``. If announcement later bypasses
-the SDK helper and calls a backend path directly, the old test stays
-green. Iron Rule #7 demands the test goes through the real announcement
-adapter.
+Stage 2.8 follow-up #3 cross-repo reconciliation:
+The previous version of this file injected a permissive validator into
+SubmitClient/HeartbeatClient so the wire payload bypassed real
+``contracts.Ex*.model_validate()``. That hid the canonical-shape gap
+codex review #7 found. After contracts v0.1.3 added
+``producer_context`` + ``Ex1.evidence`` + relaxed
+``Ex2.affected_sectors`` AND announcement's ``_normalize_for_sdk`` was
+rewritten as a full canonical mapper, the test can now use the SDK's
+default ``validate_payload`` (real ``contracts.Ex*.model_validate``).
+That makes this test catch any regression in either
+(a) the announcement normalizer or (b) contracts' canonical wire shape.
 
-This rewrite for Ex-1 / Ex-2 / Ex-3 each:
+For each Ex-1 / Ex-2 / Ex-3 we:
 
-1. Builds a real announcement candidate using the real candidate model
+1. Build a real announcement candidate using the real candidate model
    constructor (no mocks — full pydantic validation).
-2. Configures subsystem-sdk runtime with a ``BaseSubsystemContext``
-   wrapping a ``SubmitClient(MockSubmitBackend)``. The MockSubmitBackend
-   records what arrives at the wire.
-3. Constructs ``AnnouncementSubsystem`` (the REAL announcement adapter,
-   which is what production uses) and calls ``.submit(candidate.to_ex_payload())``.
-   Internally this goes:
+2. Configure subsystem-sdk runtime with a ``BaseSubsystemContext``
+   wrapping a ``SubmitClient(MockSubmitBackend)`` — using the SDK's
+   default validator (NO permissive bypass).
+3. Construct ``AnnouncementSubsystem`` (the REAL announcement adapter)
+   and call ``.submit(_validated_payload(candidate))``. Internally:
        AnnouncementSubsystem.submit
          → subsystem_sdk.submit.submit (top-level)
            → get_runtime().submit (= BaseSubsystemContext.submit)
              → SubmitClient.submit
                → validate_then_dispatch
+                 → validate_payload (REAL contracts validation)
                  → strip_sdk_envelope(payload)   ← critical strip
                  → MockSubmitBackend.submit(wire_payload)
-4. Asserts ``backend.submitted_payloads[0]`` does NOT contain any SDK
+4. Assert ``backend.submitted_payloads[0]`` does NOT contain any SDK
    envelope field (``ex_type`` / ``semantic`` / ``produced_at``).
-5. Asserts producer-owned fields announcement cares about reach the
-   backend unchanged (announcement_id, primary identifier, etc.).
-6. Asserts SubmitReceipt is accepted with no errors.
+5. Assert producer-owned canonical fields reach the backend (entity_id
+   for Ex-1, direction for Ex-2, source_node/target_node for Ex-3,
+   producer_context for all 3).
+6. Assert the wire payload itself round-trips through real
+   ``contracts.Ex*.model_validate()`` — defense in depth: if SDK strip
+   ever drops too many fields, contracts will reject, this test fails.
+7. Assert SubmitReceipt is accepted with no errors.
 
 If announcement ever refactors ``AnnouncementSubsystem.submit`` to call
 ``backend.submit`` directly (bypassing the SDK runtime), step 4 catches
@@ -48,8 +55,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-import pytest
-
 from subsystem_sdk.backends.heartbeat import SubmitBackendHeartbeatAdapter
 from subsystem_sdk.backends.mock import MockSubmitBackend
 from subsystem_sdk.base import (
@@ -60,7 +65,6 @@ from subsystem_sdk.base import (
 from subsystem_sdk.heartbeat.client import HeartbeatClient
 from subsystem_sdk.submit.client import SubmitClient
 from subsystem_sdk.validate.engine import SDK_ENVELOPE_FIELDS
-from subsystem_sdk.validate.result import ValidationResult
 
 from subsystem_announcement.config import AnnouncementConfig
 from subsystem_announcement.runtime.sdk_adapter import AnnouncementSubsystem
@@ -69,39 +73,22 @@ from subsystem_announcement.runtime.sdk_adapter import AnnouncementSubsystem
 # ── Helpers ────────────────────────────────────────────────────────
 
 
-def _permissive_validator(payload: Any) -> ValidationResult:
-    """Validator that always returns ok so we can observe the strip
-    behavior independent of contracts being installed (the cross-repo
-    align tier covers contracts validation). The boundary tier already
-    verified validate_payload's contract strip; here we verify the
-    dispatch strip end-to-end through the real announcement adapter.
-
-    ``ex_type`` reflected from the payload because subsystem-sdk's
-    ``ValidationResult`` Literal restricts it to {Ex-0..Ex-3} — pick
-    the one the producer declared.
-    """
-
-    ex_type = (
-        payload.get("ex_type") if isinstance(payload, dict) else None
-    ) or "Ex-1"
-    return ValidationResult.ok(
-        ex_type=ex_type, schema_version="integration-test"
-    )
-
-
 def _build_context_with_recording_backend() -> tuple[
     BaseSubsystemContext, MockSubmitBackend
 ]:
     """Build a BaseSubsystemContext whose SubmitClient is wired to a
-    MockSubmitBackend. Returns (context, backend) so tests can inspect
-    backend.submitted_payloads after the announcement adapter runs.
+    MockSubmitBackend.
+
+    Stage 2.8 follow-up #3: the SubmitClient + HeartbeatClient use the
+    SDK's DEFAULT validator (real ``validate_payload`` against
+    ``contracts.Ex*.model_validate``). No permissive validator bypass.
+    Returns (context, backend) so tests can inspect
+    ``backend.submitted_payloads`` after the announcement adapter runs.
 
     Registration spec mirrors what announcement's
-    ``build_registration_spec(AnnouncementConfig())`` would produce —
-    same module_id (subsystem-announcement), version, and supported
-    Ex types — so the SDK's per-registration support check
-    (BaseSubsystemContext._validate_registration_support) accepts the
-    candidates we submit (Ex-1 / Ex-2 / Ex-3).
+    ``build_registration_spec(AnnouncementConfig())`` produces so the
+    SDK's per-registration support check accepts the candidates we
+    submit (Ex-0 + Ex-1 + Ex-2 + Ex-3).
     """
 
     backend = MockSubmitBackend()
@@ -113,25 +100,26 @@ def _build_context_with_recording_backend() -> tuple[
         owner="subsystem-announcement",
         heartbeat_policy_ref="interval:60s",
     )
+    # No validator= override — uses subsystem_sdk.validate.engine.validate_payload
+    # by default, which calls contracts.Ex*.model_validate on the
+    # canonical wire payload (after SDK envelope strip).
     context = BaseSubsystemContext(
         registration=registration,
-        submit_client=SubmitClient(backend, validator=_permissive_validator),
-        heartbeat_client=HeartbeatClient(
-            SubmitBackendHeartbeatAdapter(backend),
-            validator=_permissive_validator,
-        ),
-        validator=_permissive_validator,
+        submit_client=SubmitClient(backend),
+        heartbeat_client=HeartbeatClient(SubmitBackendHeartbeatAdapter(backend)),
     )
     return context, backend
 
 
-def _assert_backend_received_wire_shape(
+def _assert_backend_received_canonical_wire(
     backend: MockSubmitBackend,
     *,
-    expected_field_present: list[str],
+    expected_top_level_fields: list[str],
+    expected_producer_context_keys: list[str],
 ) -> dict[str, Any]:
     """Common wire-shape assertion: backend received exactly one
-    payload, NO SDK envelope leaked, all listed producer fields present.
+    payload, NO SDK envelope leaked, all listed canonical top-level
+    fields present, and producer_context contains the expected keys.
     """
 
     assert len(backend.submitted_payloads) == 1, (
@@ -147,10 +135,19 @@ def _assert_backend_received_wire_shape(
         "through subsystem_sdk.submit.submit (NOT call backend.submit "
         "directly), so validate_then_dispatch's strip applies"
     )
-    for field in expected_field_present:
+    for field in expected_top_level_fields:
         assert field in wire, (
-            f"required producer field {field!r} missing from wire payload: "
-            f"{sorted(wire)}"
+            f"required canonical top-level field {field!r} missing from "
+            f"wire payload: {sorted(wire)}"
+        )
+    producer_context = wire.get("producer_context") or {}
+    assert isinstance(producer_context, dict), (
+        f"producer_context must be a dict, got {type(producer_context)!r}"
+    )
+    for key in expected_producer_context_keys:
+        assert key in producer_context, (
+            f"required producer_context key {key!r} missing: "
+            f"{sorted(producer_context)}"
         )
     return wire
 
@@ -160,30 +157,20 @@ def _submit_candidate_through_real_announcement_pipeline(
 ) -> tuple[Any, MockSubmitBackend]:
     """Drive a candidate through the FULL real announcement pipeline:
     1. ``runtime.submit._validated_payload(candidate)`` — production
-       normalization (re-validates the model AND adds subsystem_id +
-       produced_at via ``_normalize_for_sdk``, the production fix
-       added in stage 2.8 follow-up #2).
+       canonical mapper (re-validates the model AND maps announcement-
+       local fields to the contracts.Ex* canonical wire shape via
+       ``_normalize_for_sdk``).
     2. ``AnnouncementSubsystem.submit(wire_payload)`` — production
        SDK adapter.
     3. ``subsystem_sdk.submit.submit(sdk_payload)`` (top-level) →
        ``BaseSubsystemContext.submit`` → ``SubmitClient.submit`` →
-       ``validate_then_dispatch`` → ``strip_sdk_envelope`` →
-       ``MockSubmitBackend.submit(wire)``.
-
-    Codex stage 2.8 review #6 P1 fix: previous version of this helper
-    had a ``_enrich_with_sdk_required_fields`` workaround that synthesized
-    subsystem_id + produced_at IN THE TEST (because production
-    ``_validated_payload`` didn't add them). That hid a real production
-    bug. The fix landed in ``runtime/submit.py:_normalize_for_sdk``;
-    this helper now uses the production normalizer directly so the
-    test exercises exactly what production code does — no test-side
-    enrichment.
+       ``validate_then_dispatch`` → REAL ``validate_payload`` →
+       ``strip_sdk_envelope`` → ``MockSubmitBackend.submit(wire)``.
     """
 
     from subsystem_announcement.runtime.submit import _validated_payload
 
     context, backend = _build_context_with_recording_backend()
-    # Production normalization — same call submit_candidates() makes.
     wire_payload = _validated_payload(candidate)
     with configure_runtime(context):
         subsystem = AnnouncementSubsystem(AnnouncementConfig())
@@ -197,11 +184,14 @@ def _submit_candidate_through_real_announcement_pipeline(
 class TestEx1FactCandidateThroughRealAnnouncementAdapter:
     """Ex-1 candidate constructed via real AnnouncementFactCandidate
     model + driven through real AnnouncementSubsystem.submit() —
-    proves the wire-shape boundary holds for fact candidates."""
+    proves the wire-shape boundary holds AND the canonical mapper
+    output passes real ``contracts.Ex1CandidateFact.model_validate``."""
 
-    def test_ex1_announcement_adapter_strips_envelope_and_preserves_producer_fields(
+    def test_ex1_announcement_adapter_strips_envelope_and_maps_to_canonical_shape(
         self,
     ) -> None:
+        from contracts.schemas import Ex1CandidateFact
+
         from subsystem_announcement.extract import AnnouncementFactCandidate
         from subsystem_announcement.extract.candidates import FactType
         from subsystem_announcement.extract.evidence import EvidenceSpan
@@ -235,30 +225,44 @@ class TestEx1FactCandidateThroughRealAnnouncementAdapter:
             candidate
         )
 
-        assert receipt.accepted is True
-        wire = _assert_backend_received_wire_shape(
+        assert receipt.accepted is True, (
+            f"announcement → SDK → backend should produce accepted receipt; "
+            f"got errors={list(receipt.errors)}"
+        )
+        wire = _assert_backend_received_canonical_wire(
             backend,
-            expected_field_present=[
+            expected_top_level_fields=[
+                "subsystem_id",
                 "fact_id",
-                "announcement_id",
+                "entity_id",  # renamed from primary_entity_id
                 "fact_type",
-                "primary_entity_id",
-                "evidence_spans",
+                "fact_content",
+                "confidence",
+                "source_reference",  # Ex-1 keeps it top-level
                 "extracted_at",
-                "source_reference",
+                "evidence",
+            ],
+            expected_producer_context_keys=[
+                "announcement_id",
+                "related_entity_ids",
+                "evidence_spans_detail",
             ],
         )
-        assert wire["fact_id"] == "integ-real-adapter-ex1-fact"
-        assert wire["announcement_id"] == "integ-real-adapter-ex1-ann"
+        # Canonical rename: primary_entity_id → entity_id.
+        assert wire["entity_id"] == "ENT_STOCK_INTEG"
+        # Defense in depth: round-trip the wire through real contracts.
+        Ex1CandidateFact.model_validate(wire)
 
 
 # ── Ex-2 ──────────────────────────────────────────────────────────
 
 
 class TestEx2SignalCandidateThroughRealAnnouncementAdapter:
-    def test_ex2_announcement_adapter_strips_envelope_and_preserves_producer_fields(
+    def test_ex2_announcement_adapter_strips_envelope_and_maps_to_canonical_shape(
         self,
     ) -> None:
+        from contracts.schemas import Ex2CandidateSignal
+
         from subsystem_announcement.extract.evidence import EvidenceSpan
         from subsystem_announcement.signals import (
             AnnouncementSignalCandidate,
@@ -299,35 +303,54 @@ class TestEx2SignalCandidateThroughRealAnnouncementAdapter:
             candidate
         )
 
-        assert receipt.accepted is True
-        wire = _assert_backend_received_wire_shape(
+        assert receipt.accepted is True, (
+            f"got errors={list(receipt.errors)}"
+        )
+        wire = _assert_backend_received_canonical_wire(
             backend,
-            expected_field_present=[
+            expected_top_level_fields=[
+                "subsystem_id",
                 "signal_id",
-                "announcement_id",
                 "signal_type",
                 "direction",
                 "magnitude",
                 "affected_entities",
+                "affected_sectors",  # contracts v0.1.3: empty list valid
                 "time_horizon",
-                "source_fact_ids",
-                "evidence_spans",
+                "evidence",
                 "confidence",
-                "generated_at",
+            ],
+            expected_producer_context_keys=[
+                "announcement_id",
+                "source_fact_ids",
                 "source_reference",
+                "evidence_spans_detail",
             ],
         )
-        assert wire["signal_id"] == "integ-real-adapter-ex2-signal"
-        assert wire["direction"] == "positive"
+        # SignalDirection.POSITIVE → contracts.Direction.bullish.
+        assert wire["direction"] == "bullish"
+        # contracts v0.1.3 allows empty affected_sectors; announcement
+        # has no sector data so it emits [].
+        assert wire["affected_sectors"] == []
+        # generated_at MUST NOT leak to top-level (renamed to produced_at).
+        assert "generated_at" not in wire, (
+            f"Ex-2 wire payload must not contain top-level generated_at "
+            f"(SDK strip doesn't cover it; contracts.Ex2 would reject as "
+            f"extra). Wire keys: {sorted(wire)}"
+        )
+        # Defense in depth: real contracts validation.
+        Ex2CandidateSignal.model_validate(wire)
 
 
 # ── Ex-3 ──────────────────────────────────────────────────────────
 
 
 class TestEx3GraphDeltaCandidateThroughRealAnnouncementAdapter:
-    def test_ex3_announcement_adapter_strips_envelope_and_preserves_producer_fields(
+    def test_ex3_announcement_adapter_strips_envelope_and_maps_to_canonical_shape(
         self,
     ) -> None:
+        from contracts.schemas import Ex3CandidateGraphDelta
+
         from subsystem_announcement.extract.evidence import EvidenceSpan
         from subsystem_announcement.graph import (
             AnnouncementGraphDeltaCandidate,
@@ -376,23 +399,38 @@ class TestEx3GraphDeltaCandidateThroughRealAnnouncementAdapter:
             candidate
         )
 
-        assert receipt.accepted is True
-        wire = _assert_backend_received_wire_shape(
+        assert receipt.accepted is True, (
+            f"got errors={list(receipt.errors)}"
+        )
+        wire = _assert_backend_received_canonical_wire(
             backend,
-            expected_field_present=[
+            expected_top_level_fields=[
+                "subsystem_id",
                 "delta_id",
-                "announcement_id",
                 "delta_type",
                 "source_node",
                 "target_node",
                 "relation_type",
-                "evidence_spans",
+                "properties",
+                "evidence",
+            ],
+            expected_producer_context_keys=[
+                "announcement_id",
+                "source_fact_ids",
+                "source_reference",
+                "evidence_spans_detail",
+                "confidence",  # Ex-3 contracts has no canonical confidence
             ],
         )
-        assert wire["delta_id"] == "integ-real-adapter-ex3-delta"
-        assert wire["announcement_id"] == "integ-real-adapter-ex3-ann"
-        # Schema enforces min 2 evidence spans for Ex-3.
-        assert len(wire["evidence_spans"]) >= 2
+        # Enums lowered to canonical lowercase strings.
+        assert wire["delta_type"] == "add_edge"
+        assert wire["relation_type"] == "supply_contract"
+        # Schema enforces min 2 evidence refs for Ex-3.
+        assert len(wire["evidence"]) >= 2
+        # generated_at MUST NOT leak to top-level (renamed to produced_at).
+        assert "generated_at" not in wire
+        # Defense in depth: real contracts validation.
+        Ex3CandidateGraphDelta.model_validate(wire)
 
 
 # ── Defense check: prove the strip path detects a regression ──────
@@ -401,16 +439,12 @@ class TestEx3GraphDeltaCandidateThroughRealAnnouncementAdapter:
 class TestRegressionDetectionDefenseCheck:
     """Sanity check: if SDK_ENVELOPE_FIELDS ever shrinks (e.g. someone
     drops produced_at from the strip set without coordinating with
-    announcement), this test surfaces it. Drives a payload that
-    contains produced_at + ex_type + semantic and asserts BOTH the
-    backend wire shape excludes them AND SDK_ENVELOPE_FIELDS still
-    declares them as the canonical envelope set.
+    announcement), this test surfaces it. The wire-shape boundary in
+    announcement boundary tests + this integration test depend on the
+    same SDK_ENVELOPE_FIELDS constant — lock it.
     """
 
     def test_envelope_set_canonical_definition_holds(self) -> None:
-        # If anyone adds/removes envelope fields, the wire-shape
-        # boundary in announcement boundary tests + this integration
-        # test depend on the same SDK_ENVELOPE_FIELDS constant. Lock it.
         assert SDK_ENVELOPE_FIELDS == frozenset(
             {"ex_type", "semantic", "produced_at"}
         ), (

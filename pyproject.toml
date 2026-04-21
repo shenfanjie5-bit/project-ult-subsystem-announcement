@@ -24,11 +24,16 @@ dependencies = [
     # 3-step install (contracts -> subsystem-sdk -> repo) per Makefile +
     # ci.yml documented order. This matches entity-registry's pattern of
     # `project-ult-contracts>=0.1.1` in base + CI preinstall the git tag.
-    "project-ult-subsystem-sdk>=0.1.1",
+    # Stage 2.8 follow-up #3: bumped to >=0.1.2 because that release
+    # re-pins contracts >=0.1.3, which is the version that adds the
+    # `producer_context` extension slot + Ex1.evidence + relaxed
+    # Ex2.affected_sectors that announcement's `_normalize_for_sdk`
+    # canonical mapper relies on.
+    "project-ult-subsystem-sdk>=0.1.2",
     # contracts is announcement's transitive dep via subsystem-sdk; its
-    # version-constraint floor is declared in subsystem-sdk@v0.1.1's
-    # own pyproject (`project-ult-contracts>=0.1.1`), so we don't repeat
-    # it here. CI preinstalls contracts@v0.1.2 BEFORE subsystem-sdk so
+    # version-constraint floor is declared in subsystem-sdk@v0.1.2's
+    # own pyproject (`project-ult-contracts>=0.1.3`), so we don't repeat
+    # it here. CI preinstalls contracts@v0.1.3 BEFORE subsystem-sdk so
     # pip can resolve subsystem-sdk's contracts dep.
 ]
 
@@ -44,7 +49,7 @@ dev = [
     "pytest-asyncio>=0.23",
 ]
 contracts-schemas = [
-    "project-ult-contracts @ git+https://github.com/shenfanjie5-bit/project-ult-contracts.git@v0.1.2",
+    "project-ult-contracts @ git+https://github.com/shenfanjie5-bit/project-ult-contracts.git@v0.1.3",
 ]
 shared-fixtures = [
     "project-ult-audit-eval @ git+https://github.com/shenfanjie5-bit/project-ult-audit-eval.git@v0.2.2",

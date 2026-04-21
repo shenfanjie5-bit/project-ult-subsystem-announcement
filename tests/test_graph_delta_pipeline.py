@@ -101,10 +101,13 @@ def test_pipeline_generates_graph_after_signals_and_submits_ex3_last(
         "Ex-2",
         "Ex-3",
     ]
-    assert subsystem.submissions[1]["source_fact_ids"] == [
+    # Stage 2.8 follow-up #3: source_fact_ids moved from top-level into
+    # producer_context for both Ex-2 and Ex-3 (canonical contracts.Ex2
+    # / Ex3 have no source_fact_ids field).
+    assert subsystem.submissions[1]["producer_context"]["source_fact_ids"] == [
         subsystem.submissions[0]["fact_id"]
     ]
-    assert subsystem.submissions[2]["source_fact_ids"] == [
+    assert subsystem.submissions[2]["producer_context"]["source_fact_ids"] == [
         subsystem.submissions[0]["fact_id"]
     ]
     assert [receipt["ex_type"] for receipt in run.submit_receipts] == [

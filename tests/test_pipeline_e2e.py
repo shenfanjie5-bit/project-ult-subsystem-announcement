@@ -66,13 +66,36 @@ def test_process_envelope_discovers_parses_extracts_and_submits_ex1(
     assert run.trace_path.exists()
     assert subsystem.submissions
     assert [payload["ex_type"] for payload in subsystem.submissions] == ["Ex-1", "Ex-2"]
-    assert subsystem.submissions[1]["source_fact_ids"] == [
+    # Stage 2.8 follow-up #3: source_fact_ids moved from top-level into
+    # producer_context (canonical contracts.Ex2 has no source_fact_ids).
+    assert subsystem.submissions[1]["producer_context"]["source_fact_ids"] == [
         subsystem.submissions[0]["fact_id"]
     ]
-    assert all(payload["evidence_spans"] for payload in subsystem.submissions)
+    # evidence_spans (full EvidenceSpan dumps) moved into
+    # producer_context.evidence_spans_detail; canonical wire `evidence`
+    # is a list of deterministic ref strings.
+    assert all(
+        payload["producer_context"]["evidence_spans_detail"]
+        for payload in subsystem.submissions
+    )
+    assert all(payload["evidence"] for payload in subsystem.submissions)
+    # Ex-1 keeps source_reference at top-level (contracts.Ex1 requires
+    # it); Ex-2/3 put it in producer_context.
+    ex1_payloads = [
+        p for p in subsystem.submissions if p["ex_type"] == "Ex-1"
+    ]
+    ex2_3_payloads = [
+        p for p in subsystem.submissions if p["ex_type"] in {"Ex-2", "Ex-3"}
+    ]
     assert all(
         payload["source_reference"]["official_url"].startswith("https://")
-        for payload in subsystem.submissions
+        for payload in ex1_payloads
+    )
+    assert all(
+        payload["producer_context"]["source_reference"]["official_url"].startswith(
+            "https://"
+        )
+        for payload in ex2_3_payloads
     )
 
     loaded = TraceStore(config).load(run.trace_path)
@@ -254,8 +277,14 @@ def test_process_envelope_wires_configured_registry_and_reasoner(
         ("lookup_alias", "银河资本", registry_endpoint),
         ("resolve_mentions", ["银河资本"], registry_endpoint),
     ]
-    assert subsystem.submissions[0]["primary_entity_id"] == "ts_code:600000.SH"
-    assert subsystem.submissions[0]["related_entity_ids"] == ["entity-counterparty"]
+    # Stage 2.8 follow-up #3: primary_entity_id was renamed to entity_id
+    # at the wire boundary (canonical contracts.Ex1.entity_id).
+    # related_entity_ids moved into producer_context (no canonical slot
+    # in contracts.Ex1).
+    assert subsystem.submissions[0]["entity_id"] == "ts_code:600000.SH"
+    assert subsystem.submissions[0]["producer_context"]["related_entity_ids"] == [
+        "entity-counterparty"
+    ]
     assert (
         subsystem.submissions[0]["fact_content"]["reasoner_fact_content"][
             "agreement_type"

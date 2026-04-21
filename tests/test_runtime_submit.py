@@ -93,7 +93,10 @@ def test_submit_candidates_accepts_mixed_ex1_ex2_in_order() -> None:
         "Ex-1",
         "Ex-2",
     ]
-    assert subsystem.submissions[1]["source_fact_ids"] == [fact.fact_id]
+    # Stage 2.8 follow-up #3: source_fact_ids moved into producer_context.
+    assert subsystem.submissions[1]["producer_context"]["source_fact_ids"] == [
+        fact.fact_id
+    ]
     assert [receipt.ex_type for receipt in result.receipts] == ["Ex-1", "Ex-2"]
     assert [trace.ex_type for trace in result.traces] == ["Ex-1", "Ex-2"]
 

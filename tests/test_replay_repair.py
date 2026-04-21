@@ -119,9 +119,12 @@ def test_replay_uses_cached_duplicate_discovery_and_skips_network(
     assert run.document_artifact_path == document.local_path
     assert run.submit_success_count == run.candidate_count
     assert subsystem.submissions
-    assert {payload["announcement_id"] for payload in subsystem.submissions} == {
-        document.announcement_id
-    }
+    # Stage 2.8 follow-up #3: announcement_id moved from top-level into
+    # producer_context (no canonical slot in contracts.Ex*).
+    assert {
+        payload["producer_context"]["announcement_id"]
+        for payload in subsystem.submissions
+    } == {document.announcement_id}
 
 
 def test_replay_is_idempotent_for_repeated_cached_document(

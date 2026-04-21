@@ -42,10 +42,29 @@ _FORBIDDEN_RUNTIME_KEYS = FORBIDDEN_PAYLOAD_KEYS | {
 # ``_normalize_for_sdk`` as a copy of extracted_at/generated_at — it
 # inherits the same volatility (changes per construction) so it must
 # be excluded from idempotency hashes alongside its source fields.
+#
+# Stage 2.8 follow-up #3: ``producer_context`` deliberately STAYS OUT of
+# this set — its contents (announcement_id, source_fact_ids,
+# source_reference, evidence_spans_detail, confidence) are stable
+# discriminating provenance that two different logical events would
+# differ on. Dropping the whole ``producer_context`` from the hash would
+# collapse them into one idempotency key. The volatile timestamps
+# (extracted_at / generated_at) are kept at top-level (Ex-1) or renamed
+# to produced_at (Ex-2/3); generated_at is also dropped from
+# producer_context for the same reason. See the plan's Part C section.
 _VOLATILE_IDEMPOTENCY_PAYLOAD_KEYS = {
     "extracted_at",
     "generated_at",
     "produced_at",
+}
+
+# Stage 2.8 follow-up #3 — full canonical mapper. SignalDirection (local)
+# values map to contracts.core.types.Direction (canonical) values.
+# Plain value→value rename: positive market signal == bullish, etc.
+_SIGNAL_DIRECTION_TO_CONTRACTS_DIRECTION: dict[str, str] = {
+    "positive": "bullish",
+    "negative": "bearish",
+    "neutral": "neutral",
 }
 
 CandidatePayload: TypeAlias = (
@@ -294,8 +313,12 @@ def submit_candidates(
             traces.append(trace)
             return trace
 
+        # Stage 2.8 follow-up #3: gate reads from candidate (announcement-
+        # local model attribute) NOT from post-_normalize_for_sdk wire
+        # payload, because source_fact_ids is no longer at top-level on
+        # the wire (it lives in producer_context now).
         missing_fact_ids = _missing_unaccepted_batch_fact_ids(
-            payload,
+            candidate,
             accepted_fact_ids=accepted_fact_ids,
             batch_fact_ids=batch_fact_ids,
         )
@@ -406,12 +429,30 @@ def _batch_fact_ids(candidates: Sequence[CandidatePayload]) -> set[str]:
 
 
 def _missing_unaccepted_batch_fact_ids(
-    payload: Mapping[str, Any],
+    candidate: CandidatePayload,
     *,
     accepted_fact_ids: set[str],
     batch_fact_ids: set[str],
 ) -> tuple[str, ...]:
-    source_fact_ids = payload.get("source_fact_ids")
+    """Mixed-batch dependency gate for Ex-2/Ex-3 candidates.
+
+    Reads ``candidate.source_fact_ids`` directly off the announcement-
+    local Pydantic model (Signal / GraphDelta candidates). Stage 2.8
+    follow-up #3 moved ``source_fact_ids`` from the wire payload into
+    ``producer_context`` (since contracts.Ex2/Ex3 have no canonical
+    ``source_fact_ids`` field), so the gate must NOT read from the
+    post-``_normalize_for_sdk`` wire payload anymore — that would
+    silently return ``()`` and let Ex-2/Ex-3 candidates skip past their
+    Ex-1 dependency check (codex plan-review #4 P1: this would be a
+    correctness bug, not just a performance issue).
+
+    Returns the tuple of source fact ids that are present in the same
+    submit batch (``batch_fact_ids``) but have not yet been accepted
+    (``accepted_fact_ids``). Ex-1 candidates have no ``source_fact_ids``
+    attribute — for them this returns ``()``.
+    """
+
+    source_fact_ids = getattr(candidate, "source_fact_ids", None)
     if not isinstance(source_fact_ids, Sequence) or isinstance(
         source_fact_ids,
         str | bytes | bytearray,
@@ -539,58 +580,187 @@ def _validated_payload(candidate: CandidatePayload) -> dict[str, Any]:
     return _normalize_for_sdk(wire_payload, ex_type)
 
 
+def _serialize_evidence_ref(span: Mapping[str, Any], announcement_id: str) -> str:
+    """Deterministic wire-ref string for an EvidenceSpan.
+
+    Format: ``"{announcement_id}#{section_id}:{start_offset}-{end_offset}"``
+    Each ref is self-contained (Layer B can correlate back to
+    ``producer_context.evidence_spans_detail`` for quote + table_ref
+    detail without a side-channel lookup). Each ref is min_length=1 (well
+    above contracts.EvidenceRef requirement; announcement_id +
+    section_id are themselves min_length=1).
+    """
+
+    section_id = str(span.get("section_id", ""))
+    start_offset = span.get("start_offset", 0)
+    end_offset = span.get("end_offset", 0)
+    return f"{announcement_id}#{section_id}:{start_offset}-{end_offset}"
+
+
 def _normalize_for_sdk(
-    wire_payload: dict[str, Any], ex_type: str
+    local_payload: dict[str, Any], ex_type: str
 ) -> dict[str, Any]:
-    """Add the SDK-required producer fields (``subsystem_id`` +
-    ``produced_at``) to the announcement candidate's wire payload
-    before handing it to the SDK adapter.
+    """Map an announcement-local candidate wire dict to the contracts
+    canonical Ex-1 / Ex-2 / Ex-3 wire shape.
 
-    Background (codex stage 2.8 review #6 P1): subsystem-sdk's
-    ``assert_producer_only`` requires ``{subsystem_id, produced_at}``
-    for Ex-1/2/3, but the announcement candidate models declare
-    ``announcement_id`` + ``extracted_at`` (Ex-1) / ``generated_at``
-    (Ex-2/3) instead. Without this normalizer, the production submit
-    path through ``AnnouncementSubsystem.submit`` was silently broken
-    in real SDK mode — ``assert_producer_only`` would raise
-    ``MissingProducerFieldError``. The earlier integration test patched
-    around this by enriching the payload in test scaffolding; that
-    workaround is removed in stage 2.8 follow-up #2 because the
-    production normalization now does it.
+    Background (codex stage 2.8 review #7 P1, follow-up #3 cross-repo):
+    follow-up #2 added the SDK-required ``subsystem_id`` + ``produced_at``
+    fields but kept all other announcement-local fields at top-level. The
+    real SDK link
+    (``AnnouncementSubsystem.submit`` -> ``BaseSubsystemContext.submit``
+    -> ``SubmitClient.submit`` -> ``validate_then_dispatch`` ->
+    ``validate_payload`` -> ``contracts.schemas.Ex*.model_validate``)
+    then rejected those payloads because of 5 schema mismatches:
 
-    Mapping:
-    - ``subsystem_id`` ← ``MODULE_ID`` (constant
-      ``"subsystem-announcement"``, matches the registration spec
-      announcement publishes through ``AnnouncementSubsystem.on_register``).
-    - ``produced_at`` ← ``extracted_at`` (Ex-1) / ``generated_at``
-      (Ex-2/3). These are announcement's local concepts of "when did
-      the candidate come into existence" and map to the SDK's idea
-      of "producer-side production timestamp".
+      1. Field rename: announcement ``primary_entity_id`` vs
+         contracts.Ex1 ``entity_id``.
+      2. Extras rejected by ``extra="forbid"``: ``announcement_id``,
+         ``related_entity_ids``, ``evidence_spans``, ``source_fact_ids``,
+         ``source_reference`` (Ex-2/3 only — Ex-1 contracts has it),
+         ``generated_at``, ``confidence`` (Ex-3 only).
+      3. Enum value mismatch: ``SignalDirection
+         {positive,negative,neutral}`` vs ``contracts.Direction
+         {bullish,bearish,neutral}``.
+      4. Ex-2 hard requirement announcement cannot satisfy:
+         ``affected_sectors`` was ``min_length=1`` in v0.1.2; now relaxed
+         to allow ``[]`` in v0.1.3.
+      5. Ex-1 had no canonical evidence slot; v0.1.3 adds optional
+         ``evidence: list[EvidenceRef] | None``.
 
-    This is a one-way normalization: subsystem_id and produced_at are
-    added to the wire payload but the announcement-local fields
-    (announcement_id, extracted_at, generated_at, evidence_spans,
-    related_entity_ids, primary_entity_id, etc.) are also kept on the
-    wire because announcement's own analytics + Layer B's announcement-
-    aware consumers may want them. The full reconciliation between
-    announcement candidate fields and ``contracts.schemas.Ex1CandidateFact /
-    Ex2CandidateSignal / Ex3CandidateGraphDelta`` shape (entity_id vs
-    primary_entity_id rename, contracts not declaring evidence_spans,
-    etc.) is a deeper cross-repo schema decision out of stage 2.8 scope.
+    This normalizer (paired with contracts v0.1.3) closes the gap. The
+    output is what ``contracts.schemas.Ex1CandidateFact.model_validate``
+    (or Ex2/Ex3) accepts directly.
+
+    Critical mapping notes (codex plan-review #4 P1, plan Part C):
+    - **Ex-1 ``source_reference`` STAYS at top-level** (contracts.Ex1
+      requires it). It is NOT moved into ``producer_context``. Ex-2/3
+      contracts have NO ``source_reference`` slot, so it goes into
+      ``producer_context`` for those.
+    - **Ex-2 / Ex-3 ``generated_at`` is RENAMED to ``produced_at`` and
+      DROPPED from top-level** (contracts.Ex2/3 have no ``generated_at``
+      field; SDK ``_strip_sdk_envelope`` only strips
+      ``{ex_type, semantic, produced_at}`` and would NOT strip
+      ``generated_at``, so leaving it at top-level would be rejected by
+      contracts ``extra="forbid"``).
+    - ``producer_context`` deliberately holds **stable** provenance only
+      (no timestamps); the whole dict goes into ``_payload_hash`` for
+      idempotency discrimination. See ``_VOLATILE_IDEMPOTENCY_PAYLOAD_KEYS``
+      docstring.
+    - ``evidence_spans`` (full ``EvidenceSpan.model_dump`` list) is
+      preserved in ``producer_context["evidence_spans_detail"]`` for
+      Layer B replay/audit. Canonical wire ``evidence`` is a list of
+      deterministic ref strings (announcement_id#section:start-end).
     """
 
     from .registration import MODULE_ID
 
-    normalized = dict(wire_payload)
-    normalized.setdefault("subsystem_id", MODULE_ID)
-    if "produced_at" not in normalized:
-        if ex_type == "Ex-1":
-            produced_at = normalized.get("extracted_at")
-        else:  # Ex-2 / Ex-3 use generated_at
-            produced_at = normalized.get("generated_at")
-        if produced_at is not None:
-            normalized["produced_at"] = produced_at
-    return normalized
+    # All Ex types share these.
+    announcement_id = str(local_payload.get("announcement_id", ""))
+    evidence_spans_local = list(local_payload.get("evidence_spans") or [])
+    evidence_refs = [
+        _serialize_evidence_ref(span, announcement_id) for span in evidence_spans_local
+    ]
+
+    if ex_type == "Ex-1":
+        producer_context: dict[str, Any] = {
+            "announcement_id": announcement_id,
+            "related_entity_ids": list(local_payload.get("related_entity_ids", [])),
+            # Full EvidenceSpan dumps (with quote + table_ref) for Layer
+            # B replay/audit; canonical wire `evidence` is just refs.
+            "evidence_spans_detail": evidence_spans_local,
+        }
+        produced_at = local_payload.get("extracted_at")
+        return {
+            # SDK envelope routing field — subsystem-sdk's
+            # ``_identify_ex_type`` requires ``ex_type`` on dict payloads
+            # (announcement passes dicts, not BaseModel instances).
+            # Stripped by ``_strip_sdk_envelope`` before
+            # ``contracts.Ex1.model_validate`` and again before backend
+            # dispatch — does not reach Layer B.
+            "ex_type": "Ex-1",
+            "subsystem_id": MODULE_ID,
+            "fact_id": local_payload["fact_id"],
+            "entity_id": local_payload["primary_entity_id"],  # rename
+            "fact_type": str(local_payload["fact_type"]),  # FactType.value
+            "fact_content": dict(local_payload.get("fact_content") or {}),
+            "confidence": float(local_payload["confidence"]),
+            # contracts.Ex1.source_reference is REQUIRED top-level.
+            "source_reference": dict(local_payload["source_reference"]),
+            "extracted_at": local_payload["extracted_at"],
+            "evidence": evidence_refs,  # contracts v0.1.3 optional canonical
+            "producer_context": producer_context,
+            "produced_at": produced_at,
+        }
+
+    if ex_type == "Ex-2":
+        producer_context = {
+            "announcement_id": announcement_id,
+            "source_fact_ids": list(local_payload.get("source_fact_ids", [])),
+            "source_reference": dict(local_payload.get("source_reference") or {}),
+            "evidence_spans_detail": evidence_spans_local,
+        }
+        produced_at = local_payload.get("generated_at")
+        direction_local = str(local_payload.get("direction", ""))
+        try:
+            direction_canonical = _SIGNAL_DIRECTION_TO_CONTRACTS_DIRECTION[
+                direction_local
+            ]
+        except KeyError as exc:
+            raise ValueError(
+                f"unknown SignalDirection value {direction_local!r}; expected one of "
+                f"{sorted(_SIGNAL_DIRECTION_TO_CONTRACTS_DIRECTION)}"
+            ) from exc
+        return {
+            "ex_type": "Ex-2",  # SDK envelope routing — see Ex-1 above
+            "subsystem_id": MODULE_ID,
+            "signal_id": local_payload["signal_id"],
+            "signal_type": local_payload["signal_type"],
+            "direction": direction_canonical,  # bullish/bearish/neutral
+            "magnitude": float(local_payload["magnitude"]),
+            "affected_entities": list(local_payload["affected_entities"]),
+            # contracts v0.1.3 allows []. Sector enrichment happens
+            # downstream at graph-engine; announcement has no sector data.
+            "affected_sectors": [],
+            "time_horizon": str(local_payload["time_horizon"]),  # enum.value
+            "evidence": evidence_refs,
+            "confidence": float(local_payload["confidence"]),
+            "producer_context": producer_context,
+            "produced_at": produced_at,
+            # NOTE: ``generated_at`` deliberately NOT included at
+            # top-level — renamed to ``produced_at`` above. SDK strip
+            # does not cover ``generated_at``; contracts.Ex2 would
+            # reject it as extra.
+        }
+
+    # Ex-3
+    if ex_type != "Ex-3":
+        raise ValueError(
+            f"_normalize_for_sdk only supports Ex-1/Ex-2/Ex-3; got {ex_type!r}"
+        )
+    producer_context = {
+        "announcement_id": announcement_id,
+        "source_fact_ids": list(local_payload.get("source_fact_ids", [])),
+        "source_reference": dict(local_payload.get("source_reference") or {}),
+        "evidence_spans_detail": evidence_spans_local,
+        # contracts.Ex3 has no ``confidence`` field — preserve here for
+        # downstream Layer B replay/audit (announcement-local concept).
+        "confidence": float(local_payload["confidence"]),
+    }
+    produced_at = local_payload.get("generated_at")
+    return {
+        "ex_type": "Ex-3",  # SDK envelope routing — see Ex-1 above
+        "subsystem_id": MODULE_ID,
+        "delta_id": local_payload["delta_id"],
+        "delta_type": str(local_payload["delta_type"]),  # GraphDeltaType.value
+        "source_node": local_payload["source_node"],
+        "target_node": local_payload["target_node"],
+        "relation_type": str(local_payload["relation_type"]),  # GraphRelationType.value
+        "properties": dict(local_payload.get("properties") or {}),
+        "evidence": evidence_refs,  # min_length=2 upstream guarantees ≥2
+        "producer_context": producer_context,
+        "produced_at": produced_at,
+        # Same as Ex-2: ``generated_at`` deliberately NOT at top-level.
+    }
 
 
 def candidate_id_for(candidate: CandidatePayload) -> str:
