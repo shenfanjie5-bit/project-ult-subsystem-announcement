@@ -41,12 +41,26 @@ from subsystem_announcement import __version__ as _ANNOUNCEMENT_VERSION
 
 _HEALTHY: Final[str] = "healthy"
 _DEGRADED: Final[str] = "degraded"
-_DOWN: Final[str] = "down"
+_DOWN: Final[str] = "blocked"
 
 # Ex types this subsystem produces. Ex-0 (heartbeat) is provided by
 # subsystem-sdk's own heartbeat client, NOT by announcement, so it's
 # not in this list.
 _SUPPORTED_EX_TYPES: Final[tuple[str, ...]] = ("Ex-1", "Ex-2", "Ex-3")
+
+# Stage 4 §4.1.5: contract_version is the canonical contracts schema version
+# this module is bound against (NOT this module's own package version, which
+# stays in module_version). Harmonized to v0.1.3 across all 11 active
+# subsystem modules so assembly's ContractsVersionCheck (strict equality vs
+# matrix.contract_version) succeeds at the cross-project compat audit.
+# Previously this was derived dynamically via subsystem_sdk._contracts
+# .get_schema_version, which returns "unknown" today (contracts Ex models
+# don't expose a `schema_version` class attribute), and assembly's
+# VersionInfo regex `^v\d+\.\d+\.\d+$` rejects "unknown". Per Stage 4 §4.1.5
+# we hardcode the canonical value matching the contracts package version
+# announcement is pinned against.
+_CONTRACT_VERSION: Final[str] = "v0.1.3"
+_COMPATIBLE_CONTRACT_RANGE: Final[str] = ">=0.1.3,<0.2.0"
 
 
 def _probe_sdk_envelope_strip() -> dict[str, Any]:
@@ -129,35 +143,94 @@ class _HealthProbe:
     do IO.
     """
 
+    _PROBE_NAME: Final[str] = "subsystem_announcement.health"
+
     def check(self, *, timeout_sec: float) -> dict[str, Any]:
+        # Stage 4 §4.3 Lite-stack e2e fix: assembly's
+        # ``HealthResult.model_validate`` requires ``module_id`` /
+        # ``probe_name`` / ``latency_ms`` / ``message`` plus the status
+        # enum value in {healthy, degraded, blocked}.
+        from time import perf_counter
+
+        started_at = perf_counter()
         details: dict[str, Any] = {
             "supported_ex_types": list(_SUPPORTED_EX_TYPES),
+            "timeout_sec": timeout_sec,
         }
 
         # Invariant 1: SDK envelope strip wire-shape boundary (铁律 #7).
         sdk_probe = _probe_sdk_envelope_strip()
         details["sdk_envelope_strip"] = sdk_probe
         if not sdk_probe["available"]:
-            return {
-                "status": _DOWN,
-                "details": details,
-                "timeout_sec": timeout_sec,
-            }
+            return self._build_result(
+                started_at,
+                status=_DOWN,
+                message=(
+                    "subsystem-announcement SDK envelope strip wire-shape "
+                    "boundary unavailable (铁律 #7 broken)"
+                ),
+                details=details,
+            )
 
         # Invariant 2: announcement candidate models importable.
+        # Treat ``ModuleNotFoundError`` for transitive runtime deps
+        # (``httpx``, ``docling``, ``llama_index``) as ``degraded`` —
+        # offline-first dev venvs without these heavy parsers are
+        # allowed (per ``[runtime]`` extra split discussed in plan).
+        # Other import failures (e.g., a candidate model class
+        # rename / removal) remain ``blocked`` because they indicate a
+        # real domain invariant violation.
         runtime_probe = _probe_announcement_runtime_imports()
         details["announcement_runtime"] = runtime_probe
         if not runtime_probe["available"]:
-            return {
-                "status": _DOWN,
-                "details": details,
-                "timeout_sec": timeout_sec,
-            }
+            reason = runtime_probe.get("reason", "")
+            if "ModuleNotFoundError" in reason:
+                return self._build_result(
+                    started_at,
+                    status=_DEGRADED,
+                    message=(
+                        "subsystem-announcement running offline-first — "
+                        "transitive runtime dep missing in this venv: "
+                        f"{reason}"
+                    ),
+                    details=details,
+                )
+            return self._build_result(
+                started_at,
+                status=_DOWN,
+                message=(
+                    "subsystem-announcement candidate runtime imports failed"
+                ),
+                details=details,
+            )
+
+        return self._build_result(
+            started_at,
+            status=_HEALTHY,
+            message=(
+                "subsystem-announcement invariants verified (SDK envelope "
+                "strip + announcement runtime imports both available)"
+            ),
+            details=details,
+        )
+
+    def _build_result(
+        self,
+        started_at: float,
+        *,
+        status: str,
+        message: str,
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
+        from time import perf_counter
 
         return {
-            "status": _HEALTHY,
+            "module_id": "subsystem-announcement",
+            "probe_name": self._PROBE_NAME,
+            "status": status,
+            "latency_ms": max(0.0, (perf_counter() - started_at) * 1000.0),
+            "message": message,
             "details": details,
-            "timeout_sec": timeout_sec,
         }
 
 
@@ -357,14 +430,14 @@ class _VersionDeclaration:
 
     def declare(self) -> dict[str, Any]:
         sdk_envelope = self._safe_sdk_envelope()
-        contract_version = self._safe_contract_version()
 
         return {
             "module_id": "subsystem-announcement",
             "module_version": _ANNOUNCEMENT_VERSION,
+            "contract_version": _CONTRACT_VERSION,
+            "compatible_contract_range": _COMPATIBLE_CONTRACT_RANGE,
             "supported_ex_types": list(_SUPPORTED_EX_TYPES),
             "sdk_envelope_fields": sdk_envelope,
-            "contract_version": contract_version,
             # CLAUDE.md §19: Ex-3 误产出率 < 1%; the high-threshold guard
             # is a structural marker assembly can use to verify the
             # invariant is enforced (cross-checked in boundary tier).
@@ -379,18 +452,6 @@ class _VersionDeclaration:
             return sorted(SDK_ENVELOPE_FIELDS)
         except Exception:
             return []
-
-    @staticmethod
-    def _safe_contract_version() -> str:
-        try:
-            from subsystem_sdk._contracts import (
-                get_ex_schema,
-                get_schema_version,
-            )
-
-            return get_schema_version(get_ex_schema("Ex-1"))
-        except Exception:
-            return "unknown"
 
 
 class _Cli:
