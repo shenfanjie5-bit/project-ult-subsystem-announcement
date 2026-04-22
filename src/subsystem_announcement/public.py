@@ -43,6 +43,44 @@ _HEALTHY: Final[str] = "healthy"
 _DEGRADED: Final[str] = "degraded"
 _DOWN: Final[str] = "blocked"
 
+#: External heavy-dependency module names that the announcement runtime
+#: imports transitively but that offline-first dev venvs may legitimately
+#: omit (e.g. running ``[dev]`` extra without ``[runtime]``). When the
+#: announcement runtime probe fails with ``ModuleNotFoundError`` naming
+#: one of these, status downgrades to ``degraded`` instead of
+#: ``blocked``. Any other missing module — especially anything under
+#: the ``subsystem_announcement.*`` namespace — indicates a real
+#: source-side regression (rename / deletion / broken internal import)
+#: and must stay ``blocked``.
+_OFFLINE_FIRST_OPTIONAL_DEPS: Final[frozenset[str]] = frozenset(
+    {
+        "httpx",
+        "docling",
+        "docling.datamodel.base_models",
+        "llama_index",
+        "llama_index.core",
+    }
+)
+
+
+def _extract_missing_module_name(reason: str) -> str | None:
+    """Extract the missing module name from a ``ModuleNotFoundError``
+    repr embedded in a probe reason string.
+
+    Matches the standard CPython repr ``ModuleNotFoundError("No module
+    named 'X'")``. Returns the bare module name (top-level segment,
+    e.g. ``"httpx"`` for ``"httpx.something"``) so downstream whitelist
+    checks work uniformly. Returns ``None`` if the reason doesn't carry
+    a recognizable ``ModuleNotFoundError`` payload (the caller then
+    treats the failure as a non-environmental error → ``blocked``).
+    """
+    import re
+
+    match = re.search(r"No module named '([^']+)'", reason)
+    if match is None:
+        return None
+    return match.group(1).split(".", 1)[0]
+
 # Ex types this subsystem produces. Ex-0 (heartbeat) is provided by
 # subsystem-sdk's own heartbeat client, NOT by announcement, so it's
 # not in this list.
@@ -173,25 +211,29 @@ class _HealthProbe:
             )
 
         # Invariant 2: announcement candidate models importable.
-        # Treat ``ModuleNotFoundError`` for transitive runtime deps
-        # (``httpx``, ``docling``, ``llama_index``) as ``degraded`` —
-        # offline-first dev venvs without these heavy parsers are
-        # allowed (per ``[runtime]`` extra split discussed in plan).
-        # Other import failures (e.g., a candidate model class
-        # rename / removal) remain ``blocked`` because they indicate a
-        # real domain invariant violation.
+        # Codex review #11 P2 fix: only **whitelisted external heavy
+        # deps** (``httpx``, ``docling``, ``llama_index``) downgrade
+        # the result to ``degraded`` — those are the legitimately
+        # optional offline-first deps. Any other ``ModuleNotFoundError``
+        # (a renamed local module, a deleted internal namespace import,
+        # an internal dep regression) must surface as ``blocked`` so
+        # assembly's gate doesn't silently treat real source-side
+        # regressions as benign offline-first state. The previous
+        # ``"ModuleNotFoundError" in reason`` matcher was too broad.
         runtime_probe = _probe_announcement_runtime_imports()
         details["announcement_runtime"] = runtime_probe
         if not runtime_probe["available"]:
-            reason = runtime_probe.get("reason", "")
-            if "ModuleNotFoundError" in reason:
+            missing_module = _extract_missing_module_name(
+                runtime_probe.get("reason", "")
+            )
+            details["missing_module"] = missing_module
+            if missing_module in _OFFLINE_FIRST_OPTIONAL_DEPS:
                 return self._build_result(
                     started_at,
                     status=_DEGRADED,
                     message=(
                         "subsystem-announcement running offline-first — "
-                        "transitive runtime dep missing in this venv: "
-                        f"{reason}"
+                        f"optional external dep missing: {missing_module}"
                     ),
                     details=details,
                 )
@@ -199,7 +241,10 @@ class _HealthProbe:
                 started_at,
                 status=_DOWN,
                 message=(
-                    "subsystem-announcement candidate runtime imports failed"
+                    "subsystem-announcement candidate runtime imports "
+                    f"failed (missing_module={missing_module!r}); not in "
+                    "the offline-first optional-dep whitelist — "
+                    "investigate as a source-side regression"
                 ),
                 details=details,
             )
