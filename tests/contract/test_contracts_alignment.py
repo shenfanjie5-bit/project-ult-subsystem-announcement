@@ -90,7 +90,7 @@ class TestProductionNormalizerAddsSdkRequiredFields:
             fact_id="prod-norm-ex1",
             announcement_id="prod-norm-ann",
             fact_type=FactType.MAJOR_CONTRACT,
-            primary_entity_id="ENT_STOCK_300750_SZ",
+            primary_entity_id="ENT_STOCK_300750.SZ",
             related_entity_ids=["ENT_STOCK_PARTNER"],
             fact_content={"k": "v"},
             confidence=0.92,
@@ -143,7 +143,7 @@ class TestProductionNormalizerAddsSdkRequiredFields:
             signal_type="major_contract_positive",
             direction=SignalDirection.POSITIVE,
             magnitude=0.7,
-            affected_entities=["ENT_STOCK_300750_SZ"],
+            affected_entities=["ENT_STOCK_300750.SZ"],
             time_horizon=SignalTimeHorizon.SHORT_TERM,
             source_fact_ids=["prod-norm-source-fact"],
             source_reference={
@@ -327,8 +327,8 @@ class TestProductionWirePayloadPassesRealContractsValidation:
             fact_id="follow-up-3-ex1",
             announcement_id="ANN-2026-FU3-001",
             fact_type=FactType.MAJOR_CONTRACT,
-            primary_entity_id="ENT_STOCK_300750_SZ",
-            related_entity_ids=["ENT_STOCK_002594_SZ"],
+            primary_entity_id="ENT_STOCK_300750.SZ",
+            related_entity_ids=["ENT_STOCK_002594.SZ"],
             fact_content={"contract_value_cny": 1_200_000_000},
             confidence=0.93,
             source_reference={
@@ -399,7 +399,7 @@ class TestProductionWirePayloadPassesRealContractsValidation:
             signal_type="major_contract_positive",
             direction=SignalDirection.POSITIVE,
             magnitude=0.72,
-            affected_entities=["ENT_STOCK_300750_SZ"],
+            affected_entities=["ENT_STOCK_300750.SZ"],
             time_horizon=SignalTimeHorizon.SHORT_TERM,
             source_fact_ids=["follow-up-3-ex1"],
             source_reference={
