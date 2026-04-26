@@ -6,12 +6,14 @@ import asyncio
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
-
-import httpx
 
 from .envelope import AnnouncementEnvelope
 from .errors import DocumentFetchError, NonOfficialSourceError
+
+if TYPE_CHECKING:
+    import httpx
 
 _OFFICIAL_DISCLOSURE_DOMAINS: frozenset[str] = frozenset(
     {
@@ -71,6 +73,8 @@ async def fetch_official_document(
             max_attempts=max_attempts,
         )
 
+    import httpx
+
     async with httpx.AsyncClient(timeout=timeout_seconds) as managed_client:
         return await _fetch_with_client(
             envelope,
@@ -95,6 +99,8 @@ async def _fetch_with_client(
     timeout_seconds: float,
     max_attempts: int,
 ) -> bytes:
+    import httpx
+
     url = str(envelope.official_url)
     last_error: Exception | None = None
     last_status: int | None = None

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import httpx
+from typing import TYPE_CHECKING
 
 from subsystem_announcement.config import AnnouncementConfig
 
@@ -11,6 +11,9 @@ from .dedupe import AnnouncementDedupeStore, compute_content_hash
 from .document import AnnouncementDiscoveryResult, AnnouncementDocumentArtifact
 from .envelope import AnnouncementEnvelope
 from .fetcher import fetch_official_document, validate_official_url
+
+if TYPE_CHECKING:
+    import httpx
 
 __all__: list[str] = [
     "AnnouncementDiscoveryResult",
