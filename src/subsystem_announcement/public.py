@@ -176,7 +176,7 @@ class _HealthProbe:
     network IO or pulling in Docling / LlamaIndex.
 
     `check(*, timeout_sec)` returns a structured dict with status one of
-    ``healthy`` / ``degraded`` / ``down``. ``timeout_sec`` is accepted
+    ``healthy`` / ``degraded`` / ``blocked``. ``timeout_sec`` is accepted
     for assembly Protocol compliance but unused — none of these checks
     do IO.
     """
@@ -299,28 +299,42 @@ class _SmokeHook:
     _SUPPORTED_PROFILES: Final[frozenset[str]] = frozenset(
         {"lite-local", "full-dev"}
     )
+    _HOOK_NAME: Final[str] = "subsystem_announcement.smoke"
 
     def run(self, *, profile_id: str) -> dict[str, Any]:
-        if profile_id not in self._SUPPORTED_PROFILES:
+        from time import perf_counter
+
+        started_at = perf_counter()
+
+        def build_result(*, passed: bool, failure_reason: str | None) -> dict[str, Any]:
             return {
-                "passed": False,
-                "failure_reason": (
+                "module_id": "subsystem-announcement",
+                "hook_name": self._HOOK_NAME,
+                "passed": passed,
+                "duration_ms": max(0.0, (perf_counter() - started_at) * 1000.0),
+                "failure_reason": failure_reason,
+            }
+
+        if profile_id not in self._SUPPORTED_PROFILES:
+            return build_result(
+                passed=False,
+                failure_reason=(
                     f"unknown profile_id={profile_id!r}; supported: "
                     f"{sorted(self._SUPPORTED_PROFILES)}"
                 ),
-                "profile_id": profile_id,
-            }
+            )
 
         from datetime import UTC, datetime
 
+        from contracts.schemas import Ex1CandidateFact
         from subsystem_sdk.backends.mock import MockSubmitBackend
         from subsystem_sdk.submit.client import SubmitClient
-        from subsystem_sdk.validate.engine import SDK_ENVELOPE_FIELDS
-        from subsystem_sdk.validate.result import ValidationResult
+        from subsystem_sdk.validate.engine import SDK_ENVELOPE_FIELDS, strip_sdk_envelope
 
         from subsystem_announcement.extract import AnnouncementFactCandidate
         from subsystem_announcement.extract.evidence import EvidenceSpan
         from subsystem_announcement.extract.candidates import FactType
+        from subsystem_announcement.runtime.submit import _validated_payload
 
         # 1. Build a minimal valid Ex-1 candidate (model rejects bad
         #    shape via its own validators — extracted_at must be tz-aware,
@@ -350,99 +364,105 @@ class _SmokeHook:
                 extracted_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
         except Exception as exc:
-            return {
-                "passed": False,
-                "failure_reason": (
+            return build_result(
+                passed=False,
+                failure_reason=(
                     f"AnnouncementFactCandidate construction failed: {exc!r}"
                 ),
-                "profile_id": profile_id,
-            }
-
-        # 2. Submit through real SDK + MockSubmitBackend. Use a
-        #    permissive validator so smoke doesn't depend on contracts
-        #    being installed (real cross-repo align is in tests/contract
-        #    + tests/integration, not smoke).
-        backend = MockSubmitBackend()
-
-        def permissive_validator(_: Any) -> ValidationResult:
-            return ValidationResult.ok(
-                ex_type="Ex-1", schema_version="smoke"
             )
 
+        # 2. Build the canonical SDK payload through the production mapper
+        #    and validate the stripped wire shape with the real contracts
+        #    Ex-1 model. No permissive smoke-only validator may hide
+        #    announcement -> SDK -> contracts wire drift here.
         try:
-            receipt = SubmitClient(
-                backend, validator=permissive_validator
-            ).submit(ex1_candidate.to_ex_payload())
+            sdk_payload = _validated_payload(ex1_candidate)
+            contracts_payload = dict(strip_sdk_envelope(sdk_payload))
+            Ex1CandidateFact.model_validate(contracts_payload)
         except Exception as exc:
-            return {
-                "passed": False,
-                "failure_reason": f"SubmitClient.submit raised: {exc!r}",
-                "profile_id": profile_id,
-            }
+            return build_result(
+                passed=False,
+                failure_reason=(
+                    "canonical Ex-1 smoke payload failed contracts "
+                    f"validation: {exc!r}"
+                ),
+            )
 
-        # 3. Receipt must be accepted; backend must receive WIRE shape.
+        # 3. Submit through real SDK + MockSubmitBackend, using the SDK's
+        #    default contracts-backed validator.
+        backend = MockSubmitBackend()
+
+        try:
+            receipt = SubmitClient(backend).submit(sdk_payload)
+        except Exception as exc:
+            return build_result(
+                passed=False,
+                failure_reason=f"SubmitClient.submit raised: {exc!r}",
+            )
+
+        # 4. Receipt must be accepted; backend must receive WIRE shape.
         if not receipt.accepted:
-            return {
-                "passed": False,
-                "failure_reason": (
+            return build_result(
+                passed=False,
+                failure_reason=(
                     f"receipt not accepted: errors={list(receipt.errors)}"
                 ),
-                "profile_id": profile_id,
-            }
+            )
 
         if len(backend.submitted_payloads) != 1:
-            return {
-                "passed": False,
-                "failure_reason": (
+            return build_result(
+                passed=False,
+                failure_reason=(
                     f"expected 1 submitted payload, got "
                     f"{len(backend.submitted_payloads)}"
                 ),
-                "profile_id": profile_id,
-            }
+            )
         wire = backend.submitted_payloads[0]
         leaked = SDK_ENVELOPE_FIELDS.intersection(wire)
         if leaked:
-            return {
-                "passed": False,
-                "failure_reason": (
+            return build_result(
+                passed=False,
+                failure_reason=(
                     f"SDK envelope leaked to backend: {sorted(leaked)}; "
                     "validate_then_dispatch must strip envelope before "
                     "backend dispatch (announcement -> SDK -> backend "
                     "wire-shape boundary, 铁律 #7)"
                 ),
-                "profile_id": profile_id,
-            }
+            )
 
-        # 4. CLAUDE.md producer-owned fields must reach the backend.
+        # 5. Canonical producer-owned fields must reach the backend.
         for required_field in (
-            "announcement_id",
+            "subsystem_id",
             "fact_id",
-            "primary_entity_id",
-            "evidence_spans",
-            "extracted_at",
+            "entity_id",
+            "fact_type",
+            "fact_content",
+            "confidence",
             "source_reference",
+            "evidence",
+            "extracted_at",
+            "producer_context",
         ):
             if required_field not in wire:
-                return {
-                    "passed": False,
-                    "failure_reason": (
+                return build_result(
+                    passed=False,
+                    failure_reason=(
                         f"required producer field {required_field!r} "
                         f"missing from wire payload: {sorted(wire)}"
                     ),
-                    "profile_id": profile_id,
-                }
+                )
 
-        return {
-            "passed": True,
-            "profile_id": profile_id,
-            "details": {
-                "receipt_id": receipt.receipt_id,
-                "backend_kind": receipt.backend_kind,
-                "validator_version": receipt.validator_version,
-                "wire_payload_keys": sorted(wire),
-                "envelope_fields_stripped": sorted(SDK_ENVELOPE_FIELDS),
-            },
-        }
+        producer_context = wire.get("producer_context")
+        if not isinstance(producer_context, dict) or "announcement_id" not in producer_context:
+            return build_result(
+                passed=False,
+                failure_reason=(
+                    "producer_context missing announcement_id in canonical "
+                    f"wire payload: {producer_context!r}"
+                ),
+            )
+
+        return build_result(passed=True, failure_reason=None)
 
 
 class _InitHook:
