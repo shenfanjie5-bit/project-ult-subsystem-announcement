@@ -439,6 +439,61 @@ class TestEx2SignalCandidateThroughRealAnnouncementAdapter:
         # Defense in depth: real contracts validation.
         Ex2CandidateSignal.model_validate(wire)
 
+    def test_ex2_announcement_adapter_honors_sdk_block_preflight_before_backend(
+        self,
+    ) -> None:
+        from subsystem_announcement.extract.evidence import EvidenceSpan
+        from subsystem_announcement.runtime.submit import _validated_payload
+        from subsystem_announcement.signals import AnnouncementSignalCandidate
+        from subsystem_announcement.signals.candidates import (
+            SignalDirection,
+            SignalTimeHorizon,
+        )
+
+        candidate = AnnouncementSignalCandidate(
+            signal_id="integ-preflight-ex2-signal",
+            announcement_id="integ-preflight-ex2-ann",
+            signal_type="major_contract_positive",
+            direction=SignalDirection.POSITIVE,
+            magnitude=0.7,
+            affected_entities=["ENT_STOCK_UNRESOLVED"],
+            time_horizon=SignalTimeHorizon.SHORT_TERM,
+            source_fact_ids=["integ-preflight-ex2-source-fact"],
+            source_reference={
+                "official_url": (
+                    "https://www.sse.com.cn/disclosure/announcement/preflight"
+                ),
+                "is_primary_source": True,
+            },
+            evidence_spans=[
+                EvidenceSpan(
+                    section_id="s1",
+                    start_offset=0,
+                    end_offset=11,
+                    quote="placeholder",
+                )
+            ],
+            confidence=0.88,
+            generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        lookup = RecordingLookup()
+        context, backend = _build_context_with_recording_backend(
+            entity_lookup=lookup,
+            preflight_policy="block",
+        )
+
+        with configure_runtime(context):
+            receipt = AnnouncementSubsystem(AnnouncementConfig()).submit(
+                _validated_payload(candidate)
+            )
+
+        assert lookup.calls == [("ENT_STOCK_UNRESOLVED",)]
+        assert receipt.accepted is False
+        assert receipt.errors == (
+            "entity preflight blocked unresolved reference(s): ENT_STOCK_UNRESOLVED",
+        )
+        assert backend.submitted_payloads == ()
+
 
 # ── Ex-3 ──────────────────────────────────────────────────────────
 
@@ -529,6 +584,70 @@ class TestEx3GraphDeltaCandidateThroughRealAnnouncementAdapter:
         assert "generated_at" not in wire
         # Defense in depth: real contracts validation.
         Ex3CandidateGraphDelta.model_validate(wire)
+
+    def test_ex3_announcement_adapter_honors_sdk_block_preflight_before_backend(
+        self,
+    ) -> None:
+        from subsystem_announcement.extract.evidence import EvidenceSpan
+        from subsystem_announcement.graph import AnnouncementGraphDeltaCandidate
+        from subsystem_announcement.graph.candidates import (
+            GraphDeltaType,
+            GraphRelationType,
+        )
+        from subsystem_announcement.runtime.submit import _validated_payload
+
+        candidate = AnnouncementGraphDeltaCandidate(
+            delta_id="integ-preflight-ex3-delta",
+            announcement_id="integ-preflight-ex3-ann",
+            delta_type=GraphDeltaType.ADD_EDGE,
+            source_node="ENT_STOCK_RESOLVED_SRC",
+            target_node="ENT_STOCK_UNRESOLVED_DST",
+            relation_type=GraphRelationType.SUPPLY_CONTRACT,
+            properties={"strength": "strong"},
+            source_fact_ids=["integ-preflight-ex3-source-fact"],
+            source_reference={
+                "official_url": (
+                    "https://www.sse.com.cn/disclosure/announcement/preflight"
+                ),
+                "is_primary_source": True,
+            },
+            evidence_spans=[
+                EvidenceSpan(
+                    section_id="s1",
+                    start_offset=0,
+                    end_offset=11,
+                    quote="placeholder",
+                ),
+                EvidenceSpan(
+                    section_id="s2",
+                    start_offset=0,
+                    end_offset=15,
+                    quote="dual_evidence!!",
+                ),
+            ],
+            confidence=0.92,
+            generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        lookup = RecordingLookup(resolved_refs={"ENT_STOCK_RESOLVED_SRC"})
+        context, backend = _build_context_with_recording_backend(
+            entity_lookup=lookup,
+            preflight_policy="block",
+        )
+
+        with configure_runtime(context):
+            receipt = AnnouncementSubsystem(AnnouncementConfig()).submit(
+                _validated_payload(candidate)
+            )
+
+        assert lookup.calls == [
+            ("ENT_STOCK_RESOLVED_SRC", "ENT_STOCK_UNRESOLVED_DST")
+        ]
+        assert receipt.accepted is False
+        assert receipt.errors == (
+            "entity preflight blocked unresolved reference(s): "
+            "ENT_STOCK_UNRESOLVED_DST",
+        )
+        assert backend.submitted_payloads == ()
 
 
 # ── Defense check: prove the strip path detects a regression ──────
