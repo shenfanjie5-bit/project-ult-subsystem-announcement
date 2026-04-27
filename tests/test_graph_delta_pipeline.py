@@ -110,6 +110,12 @@ def test_pipeline_generates_graph_after_signals_and_submits_ex3_last(
     assert subsystem.submissions[2]["producer_context"]["source_fact_ids"] == [
         subsystem.submissions[0]["fact_id"]
     ]
+    assert subsystem.submissions[1]["affected_entities"] == [
+        "ENT_STOCK_600000.SH",
+        "ENT_CORP_HUADONG_ENERGY",
+    ]
+    assert subsystem.submissions[2]["source_node"] == "ENT_STOCK_600000.SH"
+    assert subsystem.submissions[2]["target_node"] == "ENT_CORP_HUADONG_ENERGY"
     assert [receipt["ex_type"] for receipt in run.submit_receipts] == [
         "Ex-1",
         "Ex-2",
@@ -249,8 +255,8 @@ def _major_contract_fact(announcement_id: str) -> AnnouncementFactCandidate:
         fact_id=f"fact:{announcement_id}:major_contract:1",
         announcement_id=announcement_id,
         fact_type=FactType.MAJOR_CONTRACT,
-        primary_entity_id="ts_code:600000.SH",
-        related_entity_ids=["entity:huadong-energy"],
+        primary_entity_id="ENT_STOCK_600000.SH",
+        related_entity_ids=["ENT_CORP_HUADONG_ENERGY"],
         fact_content={"event": "major_contract"},
         confidence=0.93,
         source_reference={
