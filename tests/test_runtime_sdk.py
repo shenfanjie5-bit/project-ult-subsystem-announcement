@@ -327,10 +327,7 @@ def test_real_sdk_mode_delegates_official_registration_heartbeat_and_submit(
     assert (
         "heartbeat",
         {
-            "subsystem_id": "subsystem-announcement",
-            "version": "0.1.1",
-            "heartbeat_at": heartbeat.timestamp,
-            "status": "ok",
+            "status": "healthy",
             "last_output_at": None,
             "pending_count": 0,
         },

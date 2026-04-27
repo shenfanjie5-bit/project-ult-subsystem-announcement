@@ -23,6 +23,11 @@ from ._sdk_stub import (
 )
 
 _SDK_PACKAGE: Final[str] = "subsystem_sdk"
+_SDK_HEARTBEAT_STATUS: Final[dict[str, str]] = {
+    "ok": "healthy",
+    "degraded": "degraded",
+    "failed": "unhealthy",
+}
 
 PayloadLike: TypeAlias = ExPayload | dict[str, Any]
 
@@ -154,8 +159,9 @@ class AnnouncementSubsystem(SubsystemBaseInterface):
             status="degraded" if self.last_submit_failed else "ok",
         )
         if self._uses_real_sdk:
+            # Top-level SDK send_heartbeat accepts status fields; the
+            # configured BaseSubsystemContext owns the Ex-0 envelope.
             sdk_payload = _to_sdk_heartbeat_payload(payload)
-            _validate_sdk_payload("Ex-0", sdk_payload)
             _ensure_accepted(
                 _require_sdk_api().send_heartbeat(sdk_payload),
                 "heartbeat",
@@ -253,13 +259,14 @@ def _to_sdk_registration_spec(
 
 def _to_sdk_heartbeat_payload(payload: HeartbeatPayload) -> dict[str, Any]:
     return {
-        "subsystem_id": PACKAGE_NAME,
-        "version": __version__,
-        "heartbeat_at": payload.timestamp,
-        "status": payload.status,
+        "status": _to_sdk_heartbeat_status(payload.status),
         "last_output_at": None,
         "pending_count": 0,
     }
+
+
+def _to_sdk_heartbeat_status(status: str) -> str:
+    return _SDK_HEARTBEAT_STATUS.get(status, status)
 
 
 def _to_sdk_submit_payload(candidate: PayloadLike) -> dict[str, Any]:

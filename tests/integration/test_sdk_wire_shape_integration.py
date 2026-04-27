@@ -52,6 +52,7 @@ it: the unstripped envelope reaches the recording backend.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -73,7 +74,11 @@ from subsystem_announcement.runtime.sdk_adapter import AnnouncementSubsystem
 # ── Helpers ────────────────────────────────────────────────────────
 
 
-def _build_context_with_recording_backend() -> tuple[
+def _build_context_with_recording_backend(
+    *,
+    entity_lookup: Any | None = None,
+    preflight_policy: str = "skip",
+) -> tuple[
     BaseSubsystemContext, MockSubmitBackend
 ]:
     """Build a BaseSubsystemContext whose SubmitClient is wired to a
@@ -105,10 +110,25 @@ def _build_context_with_recording_backend() -> tuple[
     # canonical wire payload (after SDK envelope strip).
     context = BaseSubsystemContext(
         registration=registration,
-        submit_client=SubmitClient(backend),
+        submit_client=SubmitClient(
+            backend,
+            entity_lookup=entity_lookup,
+            preflight_policy=preflight_policy,
+        ),
         heartbeat_client=HeartbeatClient(SubmitBackendHeartbeatAdapter(backend)),
     )
     return context, backend
+
+
+class RecordingLookup:
+    def __init__(self, resolved_refs: Iterable[str] = ()) -> None:
+        self._resolved_refs = set(resolved_refs)
+        self.calls: list[tuple[str, ...]] = []
+
+    def lookup(self, refs: Iterable[str]) -> Mapping[str, bool]:
+        refs_tuple = tuple(refs)
+        self.calls.append(refs_tuple)
+        return {ref: ref in self._resolved_refs for ref in refs_tuple}
 
 
 def _assert_backend_received_canonical_wire(
@@ -176,6 +196,34 @@ def _submit_candidate_through_real_announcement_pipeline(
         subsystem = AnnouncementSubsystem(AnnouncementConfig())
         receipt = subsystem.submit(wire_payload)
     return receipt, backend
+
+
+# ── Ex-0 ──────────────────────────────────────────────────────────
+
+
+class TestHeartbeatThroughRealAnnouncementAdapter:
+    def test_heartbeat_uses_sdk_status_boundary_and_reaches_backend(self) -> None:
+        from contracts.schemas import Ex0Metadata
+
+        context, backend = _build_context_with_recording_backend()
+
+        with configure_runtime(context):
+            subsystem = AnnouncementSubsystem(AnnouncementConfig())
+            heartbeat = subsystem.on_heartbeat()
+
+        assert heartbeat.status == "ok"
+        assert len(backend.submitted_payloads) == 1
+        wire = backend.submitted_payloads[0]
+        leaked = SDK_ENVELOPE_FIELDS.intersection(wire)
+        assert not leaked, (
+            f"announcement heartbeat leaked SDK envelope fields {sorted(leaked)}"
+        )
+        assert wire["subsystem_id"] == "subsystem-announcement"
+        assert wire["version"] == "0.1.1"
+        assert wire["status"] == "ok"
+        assert wire["pending_count"] == 0
+
+        Ex0Metadata.model_validate(wire)
 
 
 # ── Ex-1 ──────────────────────────────────────────────────────────
@@ -252,6 +300,56 @@ class TestEx1FactCandidateThroughRealAnnouncementAdapter:
         assert wire["entity_id"] == "ENT_STOCK_INTEG"
         # Defense in depth: round-trip the wire through real contracts.
         Ex1CandidateFact.model_validate(wire)
+
+    def test_ex1_announcement_adapter_honors_sdk_block_preflight_before_backend(
+        self,
+    ) -> None:
+        from subsystem_announcement.extract import AnnouncementFactCandidate
+        from subsystem_announcement.extract.candidates import FactType
+        from subsystem_announcement.extract.evidence import EvidenceSpan
+        from subsystem_announcement.runtime.submit import _validated_payload
+
+        candidate = AnnouncementFactCandidate(
+            fact_id="integ-preflight-ex1-fact",
+            announcement_id="integ-preflight-ex1-ann",
+            fact_type=FactType.MAJOR_CONTRACT,
+            primary_entity_id="ENT_STOCK_PREFLIGHT",
+            related_entity_ids=[],
+            fact_content={"k": "v"},
+            confidence=0.91,
+            source_reference={
+                "official_url": (
+                    "https://www.sse.com.cn/disclosure/announcement/preflight"
+                ),
+                "is_primary_source": True,
+            },
+            evidence_spans=[
+                EvidenceSpan(
+                    section_id="s1",
+                    start_offset=0,
+                    end_offset=11,
+                    quote="placeholder",
+                )
+            ],
+            extracted_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        lookup = RecordingLookup()
+        context, backend = _build_context_with_recording_backend(
+            entity_lookup=lookup,
+            preflight_policy="block",
+        )
+
+        with configure_runtime(context):
+            receipt = AnnouncementSubsystem(AnnouncementConfig()).submit(
+                _validated_payload(candidate)
+            )
+
+        assert lookup.calls == [("ENT_STOCK_PREFLIGHT",)]
+        assert receipt.accepted is False
+        assert receipt.errors == (
+            "entity preflight blocked unresolved reference(s): ENT_STOCK_PREFLIGHT",
+        )
+        assert backend.submitted_payloads == ()
 
 
 # ── Ex-2 ──────────────────────────────────────────────────────────
