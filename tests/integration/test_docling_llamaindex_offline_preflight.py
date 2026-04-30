@@ -46,12 +46,19 @@ import subsystem_announcement.parse.docling_client as docling_client
 from subsystem_announcement.config import AnnouncementConfig
 from subsystem_announcement.discovery.document import AnnouncementDocumentArtifact
 from subsystem_announcement.index.chunker import chunk_parsed_artifact
+from subsystem_announcement.index.vector_store import build_vector_index
 from subsystem_announcement.parse import parse_announcement
 from subsystem_announcement.parse.errors import DoclingParseError
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "announcements"
 MANIFEST_PATH = FIXTURE_ROOT / "manifest.json"
+
+# Single point of truth for the Docling pin used in this preflight.
+# Mirrors the value in pyproject.toml and is also the value the
+# existing smoke test in tests/test_parse_docling_client.py uses.
+# (review-fold-1 P2: python-reviewer P2-A.)
+_DOCLING_VERSION_PIN = "docling==2.15.1"
 
 
 def _document(
@@ -90,6 +97,16 @@ class _ManifestDocumentConverter:
     would not produce useful results — the fake codifies the same
     contract the production parser is expected to honour at the
     Docling boundary.
+
+    **Note on intentional duplication with
+    ``tests/test_parse_docling_client.py:225``** — the existing smoke
+    test has a structurally identical converter. The duplication is
+    deliberate so the M4.7 preflight is independently audit-able as
+    the M4.7 closure artifact: changes to the smoke test's converter
+    must not silently propagate into the M4.7 evidence trail. If a
+    third copy materialises, both should be lifted into a shared
+    ``tests/_docling_fixture_helpers.py`` module
+    (review-fold-1 P1: code-reviewer note).
     """
 
     def convert(self, path: str) -> object:
@@ -125,10 +142,29 @@ class _ManifestDocumentConverter:
 
 
 def _install_fake_docling(monkeypatch: pytest.MonkeyPatch) -> None:
-    def missing_version(name: str) -> str:
-        raise docling_client.metadata.PackageNotFoundError(name)
+    """Install a faked ``docling.document_converter`` module +
+    selectively shadow ``importlib.metadata.version("docling")`` so the
+    Docling boundary is exercised offline.
 
-    monkeypatch.setattr(docling_client.metadata, "version", missing_version)
+    **Selectively** shadows so the real LlamaIndex package can still
+    resolve its own version (the prior implementation faked all
+    metadata.version() calls, which broke the LlamaIndex retrieval
+    leg below — codex review-fold-1 P2).
+    """
+
+    real_version = docling_client.metadata.version
+
+    def selective_missing_version(name: str) -> str:
+        # Only "docling" is faked-missing so the resolver falls back
+        # to the configured pin in ``AnnouncementConfig``. Every other
+        # package name passes through to the real lookup.
+        if name == "docling":
+            raise docling_client.metadata.PackageNotFoundError(name)
+        return real_version(name)
+
+    monkeypatch.setattr(
+        docling_client.metadata, "version", selective_missing_version
+    )
     docling_module = types.ModuleType("docling")
     converter_module = types.ModuleType("docling.document_converter")
     converter_module.DocumentConverter = _ManifestDocumentConverter  # type: ignore[attr-defined]
@@ -187,10 +223,18 @@ def test_all_manifest_samples_round_trip_through_docling_offline_preflight(
     are synthetic stubs by design); production-PDF coverage requires
     a data-platform-canonical fetch which is banned in the closure
     baseline.
+
+    **Vacuous-pass guard (review-fold-1):** the fake's table-emission
+    heuristic (`"\\t" in content or "<table" in content`) is verified
+    against the manifest's per-sample ``expected_min_tables`` — every
+    fixture file with ``expected_min_tables >= 1``
+    (ANN-SAMPLE-002 / 003 / 007 / 008) contains a tab character, so
+    the ``len(artifact.tables) >= expected_min_tables`` assertion is
+    meaningful and not silently passing.
     """
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    config = AnnouncementConfig(docling_version="docling==2.15.1")
+    config = AnnouncementConfig(docling_version=_DOCLING_VERSION_PIN)
 
     success_results: list[tuple[str, int, int, float]] = []
     failure_results: list[str] = []
@@ -253,7 +297,7 @@ def test_manifest_samples_chunk_through_llamaindex_chunker_offline(
     smoke."""
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    config = AnnouncementConfig(docling_version="docling==2.15.1")
+    config = AnnouncementConfig(docling_version=_DOCLING_VERSION_PIN)
 
     chunk_counts: list[tuple[str, int]] = []
     for sample in manifest["samples"]:
@@ -272,11 +316,167 @@ def test_manifest_samples_chunk_through_llamaindex_chunker_offline(
         # output, so a zero-chunk sample would mean either the parser
         # produced zero sections (caught by the parse test above) or
         # the chunker dropped them silently.
-        assert len(chunks) >= 1, sample["sample_id"]
+        # Assert message includes sample_id so a CI failure points at
+        # the offending fixture (review-fold-1 P2: code-reviewer).
+        assert len(chunks) >= 1, (
+            f"zero chunks emitted for sample={sample['sample_id']} "
+            f"file={sample['file']}; chunker dropped a non-empty parse"
+        )
         chunk_counts.append((sample["sample_id"], len(chunks)))
 
     # At least 10 success samples produced at least 1 chunk each.
     assert len(chunk_counts) >= 10
+
+
+def test_real_docling_package_is_installed_and_version_resolves() -> None:
+    """Verifies the real ``docling`` package is installed and that
+    ``DocumentConverter`` is importable. Does NOT call ``.convert()``
+    on the synthetic fixtures (they are not real PDFs); the goal of
+    this test is to fail loudly if the Docling pin is missing or
+    version-mismatched in the venv where M4.7 is run, rather than
+    silently passing because the test double absorbs the failure
+    (codex review-fold-1 P2: real Docling boundary).
+
+    **CI-tier contract:** if ``docling`` is not installed in the venv
+    (e.g. a dev iteration that did not pip-install the heavy
+    ``deepsearch-glm`` build dep yet), this test is **skipped** with
+    an explicit message. CI lanes that need to gate M4.7 on the
+    Docling version pin must install the heavy dep set; lighter
+    dev lanes get a fast no-op rather than a hard failure. The
+    skip reason makes the deferral visible in the CI summary so a
+    silently-missing Docling cannot pass the M4.7 closure
+    inadvertently.
+
+    Pairs with the mocked ``test_all_manifest_samples_round_trip_*``
+    above — together they cover both "real package available (when
+    installed) + version pin matched" + "the test fixtures parse
+    against the boundary contract".
+    """
+
+    try:
+        from docling.document_converter import DocumentConverter
+    except ModuleNotFoundError:
+        pytest.skip(
+            "docling package not installed in this venv (typically "
+            "blocked by the heavy `deepsearch-glm` build dep). M4.7 "
+            "real-Docling availability check skipped — install the "
+            "full Docling dep set in the CI lane that gates this "
+            "preflight."
+        )
+
+    assert DocumentConverter is not None
+
+    # Version pin alignment: the AnnouncementConfig's resolver must be
+    # able to read the installed docling version via importlib.metadata
+    # (no fake here — the config defaults to "not-configured" and the
+    # resolver falls back to the installed package's version).
+    from importlib import metadata
+
+    installed_version = metadata.version("docling")
+    expected_version = _DOCLING_VERSION_PIN.split("==", 1)[1]
+    assert installed_version == expected_version, (
+        f"Docling pin drift: pyproject pins {_DOCLING_VERSION_PIN}, "
+        f"venv installed docling=={installed_version}"
+    )
+
+
+def test_real_llama_index_package_is_installed_and_version_resolves() -> None:
+    """Companion to ``test_real_docling_package_is_installed_*`` — pin
+    the LlamaIndex package availability + version. The downstream
+    LlamaIndex integration test below (``test_manifest_samples_*_vector_index_*``)
+    exercises the actual code path; this test catches a missing /
+    wrong-version package up-front so the failure mode is "M4.7
+    blocked on missing dep" rather than "M4.7 silently fakes the
+    LlamaIndex leg" (codex review-fold-1 P2: LlamaIndex boundary).
+    """
+
+    from importlib import metadata
+
+    # llama-index-core is the M4.7 pin per pyproject.toml.
+    installed_version = metadata.version("llama-index-core")
+    # Pinned floor: the version used in subsystem-announcement's
+    # pyproject.toml is "llama-index-core==0.10.0". Pin equality so a
+    # silent bump is caught.
+    assert installed_version == "0.10.0", (
+        f"llama-index-core pin drift: pyproject pins 0.10.0, "
+        f"venv installed llama-index-core=={installed_version}"
+    )
+
+    # The vector-store loader must be able to import the LlamaIndex
+    # API surface used by build_vector_index.
+    from subsystem_announcement.index.vector_store import (
+        _load_llama_index_api,
+    )
+
+    api = _load_llama_index_api()
+    assert api is not None
+    assert hasattr(api, "TextNode")
+    assert hasattr(api, "SimpleVectorStore")
+    assert hasattr(api, "StorageContext")
+
+
+def test_manifest_samples_build_real_llama_index_vector_index_offline(
+    fake_docling: None,
+    tmp_path: Path,
+) -> None:
+    """Build a real LlamaIndex SimpleVectorStore from the chunks of one
+    representative manifest sample, with mock embeddings (no LLM
+    network calls). Persists the vector store to ``tmp_path`` and
+    asserts the persistence side-effects landed.
+
+    This closes codex review-fold-1 P2's second concern: the M4.7
+    preflight previously stopped at the local ``chunk_parsed_artifact``
+    helper without exercising the LlamaIndex retrieval/index path.
+    This test calls ``build_vector_index`` (which loads LlamaIndex
+    proper) with mock embeddings so the integration is offline and
+    network-free, and asserts the produced ``AnnouncementVectorIndexRef``
+    + on-disk persistence."""
+
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    config = AnnouncementConfig(
+        docling_version=_DOCLING_VERSION_PIN,
+        llama_index_version="llama-index-core==0.10.0",
+        # Switch on the test-only mock-embedding path so
+        # ``_resolve_embed_model`` does not require a configured
+        # adapter or live embedding API.
+        allow_test_mock_embeddings=True,
+    )
+
+    # Pick the first success sample — one is enough to prove the
+    # LlamaIndex leg integrates; running every sample would multiply
+    # the index-persistence cost without adding signal beyond the
+    # parse/chunk preflight tests above.
+    sample = next(s for s in manifest["samples"] if s["expected_success"])
+    sample_path = FIXTURE_ROOT / sample["file"]
+    document = _document(
+        sample_path,
+        sample_id=sample["sample_id"],
+        attachment_type=sample["attachment_type"],
+    )
+
+    parsed_artifact = parse_announcement(document, config)
+    chunks = chunk_parsed_artifact(parsed_artifact)
+    assert len(chunks) >= 1
+
+    vector_store_dir = tmp_path / "vector_store"
+    vector_ref = build_vector_index(
+        chunks,
+        persist_dir=vector_store_dir,
+        config=config,
+    )
+
+    # The vector ref points at the persisted directory, the
+    # llama-index-core version is recorded, and the on-disk artifact
+    # has at least one of the expected LlamaIndex persistence files.
+    assert vector_ref.index_ref == str(vector_store_dir)
+    assert vector_ref.llama_index_version == "llama-index-core==0.10.0"
+    assert vector_store_dir.is_dir()
+    persisted_files = list(vector_store_dir.iterdir())
+    assert len(persisted_files) >= 1, (
+        f"build_vector_index did not persist any files to "
+        f"{vector_store_dir}; LlamaIndex SimpleVectorStore.persist() "
+        "may be silently skipped"
+    )
 
 
 def test_manifest_samples_per_attachment_type_have_balanced_coverage() -> None:
