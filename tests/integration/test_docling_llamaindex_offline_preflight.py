@@ -1,34 +1,32 @@
-"""M4.7 — Docling + LlamaIndex offline preflight.
+"""M4.7 — Docling + LlamaIndex offline preflight artifact.
 
-Closes the M4.7 milestone criterion: "10-20 representative A-share docs
-parsed offline; not in daily-cycle critical path." This integration
-test exercises all 13 fixture samples (10 success + 3 corrupt) in
-``tests/fixtures/announcements/manifest.json`` through the **full**
-``parse_announcement`` (Docling) + ``chunk_parsed_artifact``
-(LlamaIndex chunker) pipeline. The Docling boundary is exercised via
-a manifest-fixture-shaped test double — the synthetic fixtures (~80–
-260 bytes) are not real PDFs and would not satisfy real Docling
-parsing; using a test double here is consistent with the offline
-preflight contract (no production fetch).
+This is a PARTIAL/PREFLIGHT artifact for the M4.7 milestone criterion:
+"10-20 representative A-share docs parsed offline; not in daily-cycle
+critical path." It does not close the milestone. This integration test
+exercises all 13 fixture samples (10 success + 3 corrupt) in
+``tests/fixtures/announcements/manifest.json`` through the
+``parse_announcement`` boundary plus LlamaIndex chunk/vector-index code.
+The fixture parse path uses a manifest-fixture-shaped Docling test double:
+the synthetic fixtures (~80-260 bytes) are not representative production
+documents and do not prove real Docling parsing.
 
 Scope boundaries deliberately observed:
 
 * No production fetch. The synthetic fixtures (~80-260B) are tiny
-  stubs by design, NOT real PDFs (real PDFs would require a
-  data-platform-canonical fetch that is banned in the closure-audit
-  baseline). The manifest's per-sample contracts (``expected_min_sections``,
-  ``expected_min_tables``, ``expected_success``) are the offline
-  preflight's source of truth.
+  stubs by design, NOT representative PDFs/HTML/Word documents. The
+  manifest's per-sample contracts (``expected_min_sections``,
+  ``expected_min_tables``, ``expected_success``) are a synthetic
+  manifest-contract smoke, not representative-document proof.
 * No daily-cycle critical-path coupling. This test is in the
   ``tests/integration`` tier and runs offline (no LLM, no network,
-  no real Docling library calls — Docling is faked at the
-  ``DocumentConverter`` boundary).
+  no production fetch). Real Docling availability is checked only when
+  the package is installed; in lightweight envs it is explicitly skipped.
 * No new production source. Pure new test + new evidence.
 
 Per subsystem-announcement/CLAUDE.md, this preflight is a
 "大批量 Docling 离线任务" — verifying the parse + chunk pipeline can
-process the representative-sample manifest deterministically without
-pressing into the daily-cycle critical path.
+process the manifest contract deterministically without pressing into
+the daily-cycle critical path.
 """
 
 from __future__ import annotations
@@ -102,7 +100,7 @@ class _ManifestDocumentConverter:
     ``tests/test_parse_docling_client.py:225``** — the existing smoke
     test has a structurally identical converter. The duplication is
     deliberate so the M4.7 preflight is independently audit-able as
-    the M4.7 closure artifact: changes to the smoke test's converter
+    a standalone preflight artifact: changes to the smoke test's converter
     must not silently propagate into the M4.7 evidence trail. If a
     third copy materialises, both should be lifted into a shared
     ``tests/_docling_fixture_helpers.py`` module
@@ -186,7 +184,7 @@ def test_manifest_covers_required_preflight_sample_count() -> None:
     samples = manifest["samples"]
 
     assert 10 <= len(samples) <= 20, (
-        f"M4.7 requires 10-20 representative samples; got {len(samples)}"
+        f"M4.7 preflight manifest requires 10-20 samples; got {len(samples)}"
     )
 
     success_count = sum(1 for s in samples if s["expected_success"])
@@ -217,12 +215,10 @@ def test_all_manifest_samples_round_trip_through_docling_offline_preflight(
       preflight ceiling (180s);
     * ``expected_success=False`` samples raise ``DoclingParseError``.
 
-    This is the M4.7 closure proof: the offline preflight pipeline
-    accepts the representative-sample manifest deterministically. The
-    test does NOT exercise real Docling on real PDFs (the fixtures
-    are synthetic stubs by design); production-PDF coverage requires
-    a data-platform-canonical fetch which is banned in the closure
-    baseline.
+    This is a partial M4.7 preflight artifact: the offline preflight
+    pipeline accepts the synthetic manifest contract deterministically.
+    The test does NOT exercise real Docling on representative PDFs/HTML/
+    Word docs (the fixtures are synthetic stubs by design).
 
     **Vacuous-pass guard (review-fold-1):** the fake's table-emission
     heuristic (`"\\t" in content or "<table" in content`) is verified
@@ -344,8 +340,8 @@ def test_real_docling_package_is_installed_and_version_resolves() -> None:
     Docling version pin must install the heavy dep set; lighter
     dev lanes get a fast no-op rather than a hard failure. The
     skip reason makes the deferral visible in the CI summary so a
-    silently-missing Docling cannot pass the M4.7 closure
-    inadvertently.
+    silently-missing Docling cannot be mistaken for real-Docling
+    evidence.
 
     Pairs with the mocked ``test_all_manifest_samples_round_trip_*``
     above — together they cover both "real package available (when
@@ -359,9 +355,9 @@ def test_real_docling_package_is_installed_and_version_resolves() -> None:
         pytest.skip(
             "docling package not installed in this venv (typically "
             "blocked by the heavy `deepsearch-glm` build dep). M4.7 "
-            "real-Docling availability check skipped — install the "
-            "full Docling dep set in the CI lane that gates this "
-            "preflight."
+            "real-Docling availability check skipped; this run "
+            "produces no real Docling parse proof. Install the full "
+            "Docling dep set in the CI lane that gates this preflight."
         )
 
     assert DocumentConverter is not None
@@ -420,11 +416,11 @@ def test_manifest_samples_build_real_llama_index_vector_index_offline(
     tmp_path: Path,
 ) -> None:
     """Build a real LlamaIndex SimpleVectorStore from the chunks of one
-    representative manifest sample, with mock embeddings (no LLM
+    synthetic manifest success sample, with mock embeddings (no LLM
     network calls). Persists the vector store to ``tmp_path`` and
     asserts the persistence side-effects landed.
 
-    This closes codex review-fold-1 P2's second concern: the M4.7
+    This addresses codex review-fold-1 P2's second concern: the M4.7
     preflight previously stopped at the local ``chunk_parsed_artifact``
     helper without exercising the LlamaIndex retrieval/index path.
     This test calls ``build_vector_index`` (which loads LlamaIndex
