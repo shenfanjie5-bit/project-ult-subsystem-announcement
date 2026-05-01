@@ -1,0 +1,26 @@
+# subsystem-announcement audit-locked heavy parser/index packages.
+#
+# spec v5.0.1 NEW-01 (project_ult_v5_0_1.md L1114, L1763): all LLM-adjacent
+# Python packages must be pinned with version + SHA-256 hash. This file is
+# a partial audit pin for the first-batch heavy parser/index packages, not
+# a complete `--require-hashes` install lock.
+#
+# Scope (audit ⚠️ #1 follow-up): three audit-critical packages locked here.
+# Their full transitive dependency closure is intentionally NOT pinned here,
+# so do not wire this file into CI with `pip install --require-hashes` yet.
+# Tightening `--require-hashes` to enforce the entire closure is a follow-up
+# item that requires running
+# `pip-compile --generate-hashes` against the production constraint set;
+# the audit recommendation only mandates these three.
+#
+# Hash sources: PyPI JSON API (https://pypi.org/pypi/<name>/<version>/json),
+# fetched 2026-05-01 stage 4 consistency lane.
+
+docling==2.15.1 \
+    --hash=sha256:409a49f19f019cd4d22a81888a1b0bcd7dee21c6657efd2c812cc83d5d201938
+
+docling-core==2.13.1 \
+    --hash=sha256:5428c29efad7ae377e2d46df8fcd4185f9dbc7a6eebbea5cd0a3d6cf7162e26e
+
+llama-index-core==0.10.0 \
+    --hash=sha256:f532189aad6693abbf5ea82f98ce325ad6b41e597bbc9b9814f22ef13d5f89b9
