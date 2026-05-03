@@ -423,10 +423,12 @@ class TestEx2SignalCandidateThroughRealAnnouncementAdapter:
                 "source_fact_ids",
                 "source_reference",
                 "evidence_spans_detail",
+                "entity_refs",
             ],
         )
         # SignalDirection.POSITIVE → contracts.Direction.bullish.
         assert wire["direction"] == "bullish"
+        assert wire["producer_context"]["entity_refs"] == ["ENT_STOCK_INTEG"]
         # contracts v0.1.3 allows empty affected_sectors; announcement
         # has no sector data so it emits [].
         assert wire["affected_sectors"] == []
@@ -573,11 +575,16 @@ class TestEx3GraphDeltaCandidateThroughRealAnnouncementAdapter:
                 "source_reference",
                 "evidence_spans_detail",
                 "confidence",  # Ex-3 contracts has no canonical confidence
+                "entity_refs",
             ],
         )
         # Enums lowered to canonical lowercase strings.
         assert wire["delta_type"] == "add_edge"
         assert wire["relation_type"] == "supply_contract"
+        assert wire["producer_context"]["entity_refs"] == [
+            "ENT_STOCK_INTEG_SRC",
+            "ENT_STOCK_INTEG_DST",
+        ]
         # Schema enforces min 2 evidence refs for Ex-3.
         assert len(wire["evidence"]) >= 2
         # generated_at MUST NOT leak to top-level (renamed to produced_at).

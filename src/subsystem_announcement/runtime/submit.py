@@ -646,6 +646,11 @@ def _normalize_for_sdk(
       (no timestamps); the whole dict goes into ``_payload_hash`` for
       idempotency discrimination. See ``_VOLATILE_IDEMPOTENCY_PAYLOAD_KEYS``
       docstring.
+    - Ex-2 / Ex-3 ``producer_context["entity_refs"]`` mirrors canonical
+      top-level entity/node refs for subsystem-sdk v0.1.2 preflight
+      scanning. It stays inside the contracts-approved opaque extension
+      slot, so no non-canonical field leaks to Layer B top-level wire
+      shape.
     - ``evidence_spans`` (full ``EvidenceSpan.model_dump`` list) is
       preserved in ``producer_context["evidence_spans_detail"]`` for
       Layer B replay/audit. Canonical wire ``evidence`` is a list of
@@ -693,11 +698,13 @@ def _normalize_for_sdk(
         }
 
     if ex_type == "Ex-2":
+        affected_entities = list(local_payload["affected_entities"])
         producer_context = {
             "announcement_id": announcement_id,
             "source_fact_ids": list(local_payload.get("source_fact_ids", [])),
             "source_reference": dict(local_payload.get("source_reference") or {}),
             "evidence_spans_detail": evidence_spans_local,
+            "entity_refs": affected_entities,
         }
         produced_at = local_payload.get("generated_at")
         direction_local = str(local_payload.get("direction", ""))
@@ -717,7 +724,7 @@ def _normalize_for_sdk(
             "signal_type": local_payload["signal_type"],
             "direction": direction_canonical,  # bullish/bearish/neutral
             "magnitude": float(local_payload["magnitude"]),
-            "affected_entities": list(local_payload["affected_entities"]),
+            "affected_entities": affected_entities,
             # contracts v0.1.3 allows []. Sector enrichment happens
             # downstream at graph-engine; announcement has no sector data.
             "affected_sectors": [],
@@ -737,6 +744,8 @@ def _normalize_for_sdk(
         raise ValueError(
             f"_normalize_for_sdk only supports Ex-1/Ex-2/Ex-3; got {ex_type!r}"
         )
+    source_node = local_payload["source_node"]
+    target_node = local_payload["target_node"]
     producer_context = {
         "announcement_id": announcement_id,
         "source_fact_ids": list(local_payload.get("source_fact_ids", [])),
@@ -745,6 +754,7 @@ def _normalize_for_sdk(
         # contracts.Ex3 has no ``confidence`` field — preserve here for
         # downstream Layer B replay/audit (announcement-local concept).
         "confidence": float(local_payload["confidence"]),
+        "entity_refs": [source_node, target_node],
     }
     produced_at = local_payload.get("generated_at")
     return {
@@ -752,8 +762,8 @@ def _normalize_for_sdk(
         "subsystem_id": MODULE_ID,
         "delta_id": local_payload["delta_id"],
         "delta_type": str(local_payload["delta_type"]),  # GraphDeltaType.value
-        "source_node": local_payload["source_node"],
-        "target_node": local_payload["target_node"],
+        "source_node": source_node,
+        "target_node": target_node,
         "relation_type": str(local_payload["relation_type"]),  # GraphRelationType.value
         "properties": dict(local_payload.get("properties") or {}),
         "evidence": evidence_refs,  # min_length=2 upstream guarantees ≥2
