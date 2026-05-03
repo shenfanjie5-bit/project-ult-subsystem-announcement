@@ -27,6 +27,10 @@ synthetic preflight artifact and does not satisfy the production criterion of
 10-20 representative A-share documents parsed offline. Do not treat
 financial-report extraction as unlocked until the real-document proof exists.
 
+`requirements.txt` is an audit note and partial hash pin for the first-batch
+heavy parser/index packages. It is not a complete install lock or a
+`--require-hashes` transitive closure.
+
 Financial-doc planning boundary:
 
 - Do not create a second parser or a parallel Docling stack.
