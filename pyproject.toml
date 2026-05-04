@@ -52,7 +52,9 @@ contracts-schemas = [
     "project-ult-contracts @ git+https://github.com/shenfanjie5-bit/project-ult-contracts.git@v0.1.3",
 ]
 shared-fixtures = [
-    "project-ult-audit-eval @ git+https://github.com/shenfanjie5-bit/project-ult-audit-eval.git@v0.2.4",
+    # Pinned to v0.2.5 (bumped 2026-05-01 stage 1 consistency lane to
+    # align all 10 consumers with the audit-eval producer release).
+    "project-ult-audit-eval @ git+https://github.com/shenfanjie5-bit/project-ult-audit-eval.git@v0.2.5",
 ]
 
 [tool.setuptools.packages.find]

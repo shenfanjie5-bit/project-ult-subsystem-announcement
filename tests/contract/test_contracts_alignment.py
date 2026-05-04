@@ -453,6 +453,9 @@ class TestProductionWirePayloadPassesRealContractsValidation:
             model.producer_context["source_reference"]
             == candidate.source_reference
         )
+        assert model.producer_context["entity_refs"] == list(
+            candidate.affected_entities
+        )
 
         # No top-level generated_at on the wire (it was renamed to
         # produced_at). Same defense as the boundary deny-scan: missing
@@ -539,6 +542,10 @@ class TestProductionWirePayloadPassesRealContractsValidation:
             == candidate.source_reference
         )
         assert model.producer_context["confidence"] == candidate.confidence
+        assert model.producer_context["entity_refs"] == [
+            candidate.source_node,
+            candidate.target_node,
+        ]
 
         # Same generated_at-not-on-wire defense as Ex-2.
         assert "generated_at" not in wire
